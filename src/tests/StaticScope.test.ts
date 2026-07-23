@@ -1,21 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StaticScope, TDrawOptions } from "../StaticScope";
+import { FrequencyScaleMode as FreqScaleMode, StaticScopeMode as ScopeMode } from "../scope/ScopeModes";
 import { installAnimationFrameMock } from "./helpers/animationFrame";
 import { installMockCanvasContext } from "./helpers/canvasContext";
 import { createStaticScopeContainer, setElementVisible } from "./helpers/scopeDom";
-
-const ScopeMode = {
-    Data: 0,
-    Interleaved: 1,
-    Oscilloscope: 2,
-    Spectroscope: 3,
-    Spectrogram: 4
-} as const;
-
-const FreqScaleMode = {
-    Linear: 0,
-    Logarithmic: 1
-} as const;
 
 const createDrawOptions = (overrides: Partial<TDrawOptions> = {}): TDrawOptions => ({
     drawMode: "manual",
@@ -26,6 +14,7 @@ const createDrawOptions = (overrides: Partial<TDrawOptions> = {}): TDrawOptions 
         new Float32Array([0.5, 0.25, 0, -0.25])
     ],
     freqDomainData: [new Float32Array([-90, -60, -30, -12, -24, -48, -72, -96])],
+    phaseDomainData: [new Float32Array([0, 0.25, 0.5, 0.75, 1, -0.75, -0.5, -0.25])],
     events: [],
     bufferSize: 4,
     fftSize: 8,
@@ -61,9 +50,12 @@ describe("StaticScope instance behavior", () => {
         expect(scope.spectTempCtx.canvas.height).toBe(1024);
         expect(scope.spanSwitch.innerText).toBe("Oscilloscope");
         expect(scope.iScale.className).toBe("fas fa-chart-line");
+        expect(scope.canvas.tabIndex).toBe(0);
         expect(scope.zoom).toBe(1);
         expect(scope.zoomOffset).toBe(0);
         expect(scope.vzoom).toBe(1);
+        expect(scope.magnitudeDbMin).toBe(-100);
+        expect(scope.magnitudeDbMax).toBe(0);
     });
 
     it("reuses existing static scope DOM surfaces", () => {
@@ -94,6 +86,8 @@ describe("StaticScope instance behavior", () => {
         scope.btnSwitch.click();
         expect(scope.spanSwitch.innerText).toBe("Spectrogram");
         scope.btnSwitch.click();
+        expect(scope.spanSwitch.innerText).toBe("Phase");
+        scope.btnSwitch.click();
         expect(scope.spanSwitch.innerText).toBe("Data");
         scope.btnSwitch.click();
         expect(scope.spanSwitch.innerText).toBe("Interleaved");
@@ -101,31 +95,33 @@ describe("StaticScope instance behavior", () => {
         expect(scope.spanSwitch.innerText).toBe("Oscilloscope");
 
         scope.drawSpectrogram = false;
-        (scope as any).mode = ScopeMode.Spectroscope;
+        scope.mode = ScopeMode.Spectroscope;
         scope.btnSwitch.click();
-        expect(scope.spanSwitch.innerText).toBe("Data");
+        expect(scope.spanSwitch.innerText).toBe("Phase");
 
         scope.data = createDrawOptions({ drawMode: "continuous" });
-        (scope as any).mode = ScopeMode.Spectrogram;
+        scope.mode = ScopeMode.Spectrogram;
         scope.btnSwitch.click();
-        expect(scope.spanSwitch.innerText).toBe("Interleaved");
+        expect(scope.spanSwitch.innerText).toBe("Phase");
     });
 
     it("updates surfaces and controls when mode changes", () => {
         const { container } = createStaticScopeContainer();
         const scope = new StaticScope({ container });
 
-        (scope as any).mode = ScopeMode.Data;
+        scope.mode = ScopeMode.Data;
         expect(scope.divData.style.display).toBe("block");
         expect(scope.canvas.style.display).toBe("none");
         expect(scope.btnZoom.style.display).toBe("none");
         expect(scope.btnScale.style.display).toBe("none");
 
-        (scope as any).mode = ScopeMode.Spectroscope;
+        scope.mode = ScopeMode.Spectroscope;
         expect(scope.divData.style.display).toBe("none");
         expect(scope.canvas.style.display).toBe("block");
         expect(scope.btnZoom.style.display).toBe("");
         expect(scope.btnScale.style.display).toBe("");
+        expect(scope.btnMagnitude.style.display).toBe("");
+        expect(scope.divMagnitudeDbRange.style.display).toBe("");
         expect(scope.iSwitch.className).toBe("fas fa-sm fa-chart-bar");
     });
 
@@ -137,12 +133,46 @@ describe("StaticScope instance behavior", () => {
 
         scope.btnScale.click();
 
-        expect((scope as any).freqScaleMode).toBe(FreqScaleMode.Linear);
+        expect(scope.freqScaleMode).toBe(FreqScaleMode.Linear);
         expect(scope.iScale.className).toBe("fas fa-ruler-horizontal");
         expect(scope.btnScale.getAttribute("title")).toBe("Switch to Logarithmic Scale");
         expect(scope.lastSpect$).toBe(0);
         expect(scope.spectTempCtx.clearRect).toHaveBeenCalledWith(0, 0, scope.spectTempCtx.canvas.width, scope.spectTempCtx.canvas.height);
         expect(drawSpy).toHaveBeenCalled();
+    });
+
+    it("toggles spectrum magnitude between dB and linear amplitude", () => {
+        const { container } = createStaticScopeContainer();
+        const scope = new StaticScope({ container });
+        scope.mode = ScopeMode.Spectroscope;
+
+        scope.btnMagnitude.click();
+
+        expect(scope.magnitudeScaleMode).toBe(0);
+        expect(scope.btnMagnitude.innerText).toBe("amp");
+        expect(scope.btnMagnitude.getAttribute("title")).toBe("Switch to Decibels");
+        expect(scope.divMagnitudeDbRange.style.display).toBe("none");
+    });
+
+    it("updates and validates explicit magnitude dB limits", () => {
+        const { container } = createStaticScopeContainer();
+        const scope = new StaticScope({ container });
+        const drawSpy = vi.spyOn(scope, "draw");
+        scope.mode = ScopeMode.Spectroscope;
+
+        scope.inputMagnitudeDbMin.value = "-72";
+        scope.inputMagnitudeDbMin.dispatchEvent(new Event("change"));
+        scope.inputMagnitudeDbMax.value = "6";
+        scope.inputMagnitudeDbMax.dispatchEvent(new Event("change"));
+
+        expect(scope.magnitudeDbMin).toBe(-72);
+        expect(scope.magnitudeDbMax).toBe(6);
+        expect(drawSpy).toHaveBeenCalled();
+
+        scope.inputMagnitudeDbMin.value = "10";
+        scope.inputMagnitudeDbMin.dispatchEvent(new Event("change"));
+        expect(scope.magnitudeDbMin).toBe(-72);
+        expect(scope.inputMagnitudeDbMin.value).toBe("-72");
     });
 
     it("clamps zoom, pan, vertical zoom, and reset controls", () => {
@@ -158,11 +188,54 @@ describe("StaticScope instance behavior", () => {
         expect(scope.zoomOffset).toBe(0);
 
         scope.vzoom = 100;
-        expect(scope.vzoom).toBe(16);
+        expect(scope.vzoom).toBe(64);
 
         scope.btnZoom.click();
         expect(scope.zoom).toBe(1);
         expect(scope.btnZoom.innerHTML).toBe("1.0x");
+    });
+
+    it("supports deep horizontal zoom and vertical zoom in both directions", () => {
+        const { container } = createStaticScopeContainer();
+        const scope = new StaticScope({ container });
+        scope.draw(createDrawOptions({
+            timeDomainData: [new Float32Array(4096)],
+            bufferSize: 128
+        }));
+
+        scope.zoom = 1024;
+        expect(scope.zoom).toBe(1024);
+
+        scope.vzoom = 1 / 128;
+        expect(scope.vzoom).toBeCloseTo(1 / 64);
+        scope.vzoom = 128;
+        expect(scope.vzoom).toBe(64);
+    });
+
+    it("passes the explicit magnitude dB limits to the spectroscope renderer", () => {
+        const { container } = createStaticScopeContainer({ width: 320, height: 180 });
+        const scope = new StaticScope({ container });
+        const drawSpectroscope = vi.spyOn(StaticScope, "drawSpectroscope").mockImplementation(() => undefined);
+        scope.mode = ScopeMode.Spectroscope;
+        scope.magnitudeDbMin = -72;
+        scope.magnitudeDbMax = 6;
+
+        scope.draw(createDrawOptions());
+        rafMock.flush();
+
+        expect(drawSpectroscope).toHaveBeenCalledWith(
+            scope.ctx,
+            320,
+            180,
+            expect.any(Object),
+            1,
+            0,
+            undefined,
+            FreqScaleMode.Logarithmic,
+            1,
+            -72,
+            6
+        );
     });
 
     it("updates cursor state from pointer movement and clears it on leave", () => {
@@ -192,22 +265,27 @@ describe("StaticScope instance behavior", () => {
         const drawOscilloscope = vi.spyOn(StaticScope, "drawOscilloscope").mockImplementation(() => undefined);
         const fillDivData = vi.spyOn(StaticScope, "fillDivData").mockImplementation(() => undefined);
         const drawSpectroscope = vi.spyOn(StaticScope, "drawSpectroscope").mockImplementation(() => undefined);
+        const drawPhase = vi.spyOn(StaticScope, "drawPhase").mockImplementation(() => undefined);
 
         scope.draw(drawOptions);
         scope.draw(drawOptions);
         expect(rafMock.frames).toHaveLength(1);
 
-        (scope as any).mode = ScopeMode.Oscilloscope;
+        scope.mode = ScopeMode.Oscilloscope;
         rafMock.flush();
-        expect(drawOscilloscope).toHaveBeenCalledWith(scope.ctx, 320, 180, drawOptions, 1, 0, 1, undefined);
+        expect(drawOscilloscope).toHaveBeenCalledWith(scope.ctx, 320, 180, drawOptions, 1, 0, 1, undefined, undefined);
 
-        (scope as any).mode = ScopeMode.Data;
+        scope.mode = ScopeMode.Data;
         rafMock.flush();
         expect(fillDivData).toHaveBeenCalledWith(scope.divData, drawOptions);
 
-        (scope as any).mode = ScopeMode.Spectroscope;
+        scope.mode = ScopeMode.Spectroscope;
         rafMock.flush();
-        expect(drawSpectroscope).toHaveBeenCalledWith(scope.ctx, 320, 180, drawOptions, 1, 0, undefined, FreqScaleMode.Logarithmic);
+        expect(drawSpectroscope).toHaveBeenCalledWith(scope.ctx, 320, 180, drawOptions, 1, 0, undefined, FreqScaleMode.Logarithmic, 1, -100, 0);
+
+        scope.mode = ScopeMode.Phase;
+        rafMock.flush();
+        expect(drawPhase).toHaveBeenCalledWith(scope.ctx, 320, 180, drawOptions, 1, 0, undefined, FreqScaleMode.Logarithmic);
     });
 
     it("skips continuous rendering while hidden and resets spectrogram cache on data shape change", () => {
@@ -225,5 +303,29 @@ describe("StaticScope instance behavior", () => {
         rafMock.flush();
 
         expect(drawOscilloscope).not.toHaveBeenCalled();
+    });
+
+    it("copies the selected waveform as a sample/time/channel CSV table", () => {
+        const { container } = createStaticScopeContainer({ width: 320, height: 180 });
+        const scope = new StaticScope({ container });
+        scope.data = createDrawOptions({ sampleRate: 4 });
+        scope.selection = { startSampleIndex: 1, endSampleIndex: 3 };
+        const setData = vi.fn();
+        const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+        Object.defineProperty(copyEvent, "clipboardData", {
+            value: { setData }
+        });
+
+        scope.canvas.dispatchEvent(copyEvent);
+
+        const expected = [
+            "sample,time_seconds,channel1,channel2",
+            "1,0.25,0.25,0.25",
+            "2,0.5,-0.25,0",
+            ""
+        ].join("\n");
+        expect(setData).toHaveBeenCalledWith("text/plain", expected);
+        expect(setData).toHaveBeenCalledWith("text/csv", expected);
+        expect(copyEvent.defaultPrevented).toBe(true);
     });
 });

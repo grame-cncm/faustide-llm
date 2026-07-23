@@ -43,7 +43,7 @@ export class PlotController {
 
     /**
      * Wires the plot panel controls (mode, plot button, sample count, sample
-     * rate, FFT size/overlap, spectrogram) and seeds them from the current
+     * rate, FFT size/overlap/window, spectrogram) and seeds them from the current
      * compile options.
      */
     bind() {
@@ -67,6 +67,11 @@ export class PlotController {
             this.uiEnv.analyser.fftOverlap = this.compileOptions.plotFFTOverlap;
             this.saveEditorParams();
         });
+        $<HTMLInputElement>("#select-plot-fftwindow").on("change", e => {
+            this.compileOptions.plotFFTWindow = e.currentTarget.value as FaustEditorCompileOptions["plotFFTWindow"];
+            this.uiEnv.analyser.fftWindow = this.compileOptions.plotFFTWindow;
+            this.saveEditorParams();
+        });
         $<HTMLInputElement>("#input-plot-samps")[0].value = this.compileOptions.plot.toString();
     }
 
@@ -74,6 +79,7 @@ export class PlotController {
      * Applies a plot mode, updating the analyser draw mode, the plot button
      * label/visibility, and whether the sample-rate field is editable (only the
      * offline mode lets the user choose a rate; live modes track the AudioContext).
+     * The active plot visualization is preserved across acquisition-mode changes.
      */
     private applyPlotMode(plotMode: FaustEditorCompileOptions["plotMode"]) {
         this.compileOptions.plotMode = plotMode;
@@ -86,7 +92,6 @@ export class PlotController {
             $("#btn-plot").show();
             $span.text("Plot (Snapshot)");
         } else $("#btn-plot").hide();
-        if (this.compileOptions.plotMode === "continuous") this.uiEnv.plotScope.mode = 2;
         const $plotSR = $<HTMLInputElement>("#input-plot-sr");
         if (this.compileOptions.plotMode === "offline") $plotSR.prop("disabled", false)[0].value = this.compileOptions.plotSR.toString();
         else $plotSR.prop("disabled", true)[0].value = this.audioEnv.audioCtx ? this.audioEnv.audioCtx.sampleRate.toString() : "48000";

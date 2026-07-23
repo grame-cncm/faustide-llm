@@ -7,14 +7,15 @@ describe("ScopeViewState", () => {
         expect(s.getZoom("oscilloscope")).toBe(1);
         expect(s.getZoomOffset("spectroscope")).toBe(0);
         expect(s.getVerticalZoom("spectrogram")).toBe(1);
+        expect(s.getZoom("phase")).toBe(1);
     });
 
-    it("clamps vertical zoom to [1, 16]", () => {
+    it("clamps vertical zoom to [1/64, 64]", () => {
         const s = new ScopeViewState();
         s.setVerticalZoom("oscilloscope", 100);
-        expect(s.getVerticalZoom("oscilloscope")).toBe(16);
+        expect(s.getVerticalZoom("oscilloscope")).toBe(64);
         s.setVerticalZoom("oscilloscope", 0);
-        expect(s.getVerticalZoom("oscilloscope")).toBe(1);
+        expect(s.getVerticalZoom("oscilloscope")).toBe(1 / 64);
         s.setVerticalZoom("oscilloscope", 4);
         expect(s.getVerticalZoom("oscilloscope")).toBe(4);
     });
@@ -24,6 +25,9 @@ describe("ScopeViewState", () => {
         s.setVerticalZoom("oscilloscope", 8);
         expect(s.getVerticalZoom("oscilloscope")).toBe(8);
         expect(s.getVerticalZoom("spectroscope")).toBe(1);
+        s.zoomTo("phase", 4, 16, 0.5);
+        expect(s.getZoom("phase")).toBe(4);
+        expect(s.getZoom("spectroscope")).toBe(1);
     });
 
     it("zoomTo anchors the offset around the cursor and returns the applied zoom", () => {

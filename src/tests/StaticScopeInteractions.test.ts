@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TDrawOptions } from "../StaticScope";
 import {
     StaticScopeInteractionTarget,
+    handleStaticScopeDoubleClick,
     handleStaticScopePointerDown,
     handleStaticScopePointerLeave,
     handleStaticScopePointerMove,
@@ -87,10 +88,66 @@ describe("StaticScopeInteractions", () => {
         expect(target.cursor).toEqual({ x: 120, y: 40 });
     });
 
+    it("does not wheel-zoom the magnitude y-axis", () => {
+        const target = createTarget();
+        target.mode = StaticScopeMode.Spectroscope;
+        target.vzoom = 4;
+        const verticalWheel = new WheelEvent("wheel", { deltaY: -1 });
+        Object.defineProperties(verticalWheel, {
+            offsetX: { value: 10 },
+            offsetY: { value: 20 }
+        });
+
+        handleStaticScopeWheel(target, verticalWheel);
+
+        expect(target.vzoom).toBe(4);
+    });
+
+    it("anchors wheel zoom to the pointer from the current event", () => {
+        const target = createTarget();
+        let cursorWhenZoomChanged: { x: number; y: number };
+        let zoom = 1;
+        Object.defineProperty(target, "zoom", {
+            configurable: true,
+            get: () => zoom,
+            set: (value: number) => {
+                cursorWhenZoomChanged = target.cursor;
+                zoom = value;
+            }
+        });
+        const wheel = new WheelEvent("wheel", { deltaY: -1 });
+        Object.defineProperties(wheel, {
+            offsetX: { value: 180 },
+            offsetY: { value: 60 }
+        });
+
+        handleStaticScopeWheel(target, wheel);
+
+        expect(cursorWhenZoomChanged).toEqual({ x: 180, y: 60 });
+    });
+
+    it("pans without changing zoom for a horizontal-only wheel event", () => {
+        const target = createTarget();
+        const wheel = new WheelEvent("wheel", { deltaX: 10, deltaY: 0 });
+        Object.defineProperties(wheel, {
+            offsetX: { value: 180 },
+            offsetY: { value: 60 }
+        });
+
+        handleStaticScopeWheel(target, wheel);
+
+        expect(target.zoom).toBe(1);
+        expect(target.zoomOffset).toBeGreaterThan(0);
+    });
+
     it("pans while dragging and removes document listeners on release", () => {
         const target = createTarget();
-        const down = new MouseEvent("mousedown");
-        Object.defineProperty(down, "pageX", { value: 100 });
+        const down = new MouseEvent("mousedown", { altKey: true });
+        Object.defineProperties(down, {
+            offsetX: { value: 100 },
+            offsetY: { value: 40 },
+            pageX: { value: 100 }
+        });
         const preventDefault = vi.spyOn(down, "preventDefault");
         const stopPropagation = vi.spyOn(down, "stopPropagation");
 
@@ -108,6 +165,57 @@ describe("StaticScopeInteractions", () => {
 
         document.dispatchEvent(new MouseEvent("mouseup"));
         expect(target.dragging).toBe(false);
+        expect(target.canvas.style.cursor).toBe("");
+    });
+
+    it("resets only the double-clicked axis", () => {
+        const target = createTarget();
+        target.zoom = 4;
+        target.zoomOffset = 0.5;
+        target.vzoom = 8;
+
+        const yAxisDoubleClick = new MouseEvent("dblclick");
+        Object.defineProperties(yAxisDoubleClick, {
+            offsetX: { value: 20 },
+            offsetY: { value: 60 }
+        });
+        handleStaticScopeDoubleClick(target, yAxisDoubleClick);
+
+        expect(target.vzoom).toBe(1);
+        expect(target.zoom).toBe(4);
+        expect(target.zoomOffset).toBe(0.5);
+
+        const xAxisDoubleClick = new MouseEvent("dblclick");
+        Object.defineProperties(xAxisDoubleClick, {
+            offsetX: { value: 160 },
+            offsetY: { value: 170 }
+        });
+        handleStaticScopeDoubleClick(target, xAxisDoubleClick);
+
+        expect(target.zoom).toBe(1);
+        expect(target.zoomOffset).toBe(0);
+        expect(target.vzoom).toBe(1);
+    });
+
+    it("selects a waveform range with an unmodified mouse drag", () => {
+        const target = createTarget();
+        const down = new MouseEvent("mousedown");
+        Object.defineProperties(down, {
+            offsetX: { value: 80 },
+            offsetY: { value: 40 },
+            pageX: { value: 80 }
+        });
+
+        handleStaticScopePointerDown(target, down);
+        expect(target.canvas.style.cursor).toBe("crosshair");
+
+        const drag = new MouseEvent("mousemove");
+        Object.defineProperty(drag, "pageX", { value: 250 });
+        document.dispatchEvent(drag);
+        document.dispatchEvent(new MouseEvent("mouseup"));
+
+        expect(target.selection.startSampleIndex).toBeLessThan(target.selection.endSampleIndex);
+        expect(target.selection.endSampleIndex).toBeLessThanOrEqual(4);
         expect(target.canvas.style.cursor).toBe("");
     });
 });

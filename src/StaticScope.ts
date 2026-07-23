@@ -1,20 +1,26 @@
 import {
     FrequencyScaleMode as EFreqScaleMode,
+    MagnitudeScaleMode,
     StaticScopeMode as EScopeMode,
     getStaticScopeIconClassName,
     getStaticScopeModeName
 } from "./scope/ScopeModes";
 import { drawCanvasBackground } from "./scope/CanvasDrawing";
-import { fillStaticScopeDataTable } from "./scope/static/DataTableRenderer";
+import {
+    fillStaticScopeDataTable,
+    getSelectedWaveformCsv
+} from "./scope/static/DataTableRenderer";
 import { drawStaticInterleaved, drawStaticOscilloscope } from "./scope/static/TimeDomainRenderer";
-import { drawStaticSpectroscope } from "./scope/static/FrequencyRenderer";
+import { drawStaticPhase, drawStaticSpectroscope } from "./scope/static/FrequencyRenderer";
 import { drawStaticOfflineSpectrogram, drawStaticSpectrogram } from "./scope/static/SpectrogramRenderer";
 import {
     createStaticScopeControls,
+    updateStaticScopeMagnitudeButton,
     updateStaticScopeModeControls,
     updateStaticScopeScaleButton
 } from "./scope/static/StaticScopeControls";
 import {
+    handleStaticScopeDoubleClick,
     handleStaticScopePointerDown,
     handleStaticScopePointerLeave,
     handleStaticScopePointerMove,
@@ -24,19 +30,34 @@ import { STATIC_SCOPE_LEFT_MARGIN } from "./scope/static/StaticScopeLayout";
 import {
     drawStaticScopeEvent,
     drawStaticScopeGrid,
-    drawStaticScopeStats
+    drawStaticScopeStats,
+    drawStaticWaveformSelection
 } from "./scope/static/StaticScopeOverlays";
-import type { TDrawOptions, TOptions, TStatsToDraw } from "./scope/static/StaticScopeTypes";
+import type {
+    TDrawOptions,
+    TOptions,
+    TStatsToDraw,
+    TWaveformSelection
+} from "./scope/static/StaticScopeTypes";
 import { ScopeViewState, type ScopeZoomType } from "./scope/static/ScopeViewState";
 import { buildScopeCsv } from "./scope/static/ScopeCsvExport";
 import { downloadTextFile } from "./scope/DownloadFile";
 import "./StaticScope.scss";
 
+/** Deepest useful horizontal inspection range while retaining stable math. */
+const MAX_HORIZONTAL_ZOOM = 4096;
+
 // Re-exported so existing importers (e.g. Analyser.ts) keep using "./StaticScope".
-export type { TDrawOptions } from "./scope/static/StaticScopeTypes";
+export type {
+    TDrawOptions,
+    TWaveformSelection
+} from "./scope/static/StaticScopeTypes";
 
 /**
- * The main class for the static scope, handling rendering and user interaction.
+ * Renders captured Faust buffers as data, time, magnitude, phase, or waterfall views.
+ *
+ * The widget owns mode-specific zoom state and DOM controls while extracted
+ * renderers own the canvas algorithms. It does not read live AnalyserNodes.
  */
 export class StaticScope {
     /** ID of the current requestAnimationFrame */
@@ -57,6 +78,14 @@ export class StaticScope {
     btnZoomIn: HTMLButtonElement;
     /** Button to switch between frequency scales (linear/log) */
     btnScale: HTMLButtonElement;
+    /** Button to switch between dB and linear magnitude */
+    btnMagnitude: HTMLButtonElement;
+    /** Container for the magnitude dB-axis limit inputs. */
+    divMagnitudeDbRange: HTMLDivElement;
+    /** Lower magnitude dB-axis limit input. */
+    inputMagnitudeDbMin: HTMLInputElement;
+    /** Upper magnitude dB-axis limit input. */
+    inputMagnitudeDbMax: HTMLInputElement;
     /** Button to download the current data as a CSV file */
     btnDownload: HTMLButtonElement;
     /** Icon element within the switch button */
@@ -73,12 +102,20 @@ export class StaticScope {
     private _mode = EScopeMode.Oscilloscope;
     /** The current frequency scale mode */
     private _freqScaleMode = EFreqScaleMode.Logarithmic;
+    /** The current vertical magnitude mapping */
+    private _magnitudeScaleMode = MagnitudeScaleMode.Decibels;
+    /** Lower limit of the magnitude dB axis. */
+    private _magnitudeDbMin = -100;
+    /** Upper limit of the magnitude dB axis. */
+    private _magnitudeDbMax = 0;
     /** Per-mode horizontal/vertical zoom and pan state with its clamping rules. */
     private viewState = new ScopeViewState();
     /** The current data and options for drawing */
     data: TDrawOptions = { drawMode: "manual", timeDomainData: undefined, startSampleIndex: 0, startBufferIndex: 0, bufferSize: 128, fftSize: 256, fftOverlap: 2 };
     /** Current cursor position on the canvas */
     cursor: { x: number; y: number };
+    /** Current waveform sample selection, if any. */
+    selection?: TWaveformSelection;
     /** Flag indicating if the user is currently dragging the mouse */
     dragging: boolean = false;
     /** A temporary 2D context for rendering the spectrogram offline */
@@ -120,13 +157,14 @@ export class StaticScope {
             drawBackground: this.drawBackground.bind(this),
             drawGrid: this.drawGrid.bind(this),
             drawEvent: this.drawEvent.bind(this),
-            drawStats: this.drawStats.bind(this)
+            drawStats: this.drawStats.bind(this),
+            drawSelection: this.drawSelection.bind(this)
         };
     }
     /**
      * Draws the scope in interleaved mode.
      * The core principle is to display each channel's waveform in its own horizontal strip.
-     * The y-axis within each strip represents amplitude, and the x-axis represents time (in samples).
+     * The y-axis within each strip represents amplitude, and the x-axis represents time.
      * The view can be stabilized for periodic signals by finding a consistent zero-crossing point.
      * It also includes an optimization to draw min/max values for each horizontal pixel to represent the signal envelope accurately when zoomed out.
      * @param {CanvasRenderingContext2D} ctx The canvas rendering context.
@@ -138,13 +176,13 @@ export class StaticScope {
      * @param {number} verticalZoom The vertical zoom level.
      * @param {{ x: number; y: number }} [cursor] The current cursor position.
      */
-    static drawInterleaved(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }) {
-        drawStaticInterleaved(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor);
+    static drawInterleaved(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }, selection?: TWaveformSelection) {
+        drawStaticInterleaved(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor, selection);
     }
     /**
      * Draws the scope in oscilloscope mode.
      * This function overlays all channel waveforms in a single view, much like a traditional oscilloscope.
-     * The y-axis represents amplitude, and the x-axis represents time (in samples).
+     * The y-axis represents amplitude, and the x-axis represents time.
      * It shares the same stabilization and min/max drawing optimization logic as the interleaved mode.
      * @param {CanvasRenderingContext2D} ctx The canvas rendering context.
      * @param {number} canvasWidth The width of the canvas.
@@ -155,8 +193,8 @@ export class StaticScope {
      * @param {number} verticalZoom The vertical zoom level.
      * @param {{ x: number; y: number }} [cursor] The current cursor position.
      */
-    static drawOscilloscope(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }) {
-        drawStaticOscilloscope(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor);
+    static drawOscilloscope(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }, selection?: TWaveformSelection) {
+        drawStaticOscilloscope(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor, selection);
     }
     /**
      * Draws the scope in spectroscope mode.
@@ -172,9 +210,16 @@ export class StaticScope {
      * @param {number} horizontalZoomOffset The horizontal zoom offset.
      * @param {{ x: number; y: number }} cursor The current cursor position.
      * @param {EFreqScaleMode} freqScaleMode The frequency scale mode (linear or log).
+     * @param {MagnitudeScaleMode} magnitudeScaleMode The magnitude unit mapping.
+     * @param {number} magnitudeDbMin The lower dB-axis limit.
+     * @param {number} magnitudeDbMax The upper dB-axis limit.
      */
-    static drawSpectroscope(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, cursor: { x: number; y: number }, freqScaleMode: EFreqScaleMode) {
-        drawStaticSpectroscope(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, cursor, freqScaleMode);
+    static drawSpectroscope(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, cursor: { x: number; y: number }, freqScaleMode: EFreqScaleMode, magnitudeScaleMode = MagnitudeScaleMode.Decibels, magnitudeDbMin = -100, magnitudeDbMax = 0) {
+        drawStaticSpectroscope(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, cursor, freqScaleMode, magnitudeScaleMode, magnitudeDbMin, magnitudeDbMax);
+    }
+    /** Draws wrapped FFT phase with degree-labelled output on the selected frequency scale. */
+    static drawPhase(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, cursor: { x: number; y: number }, freqScaleMode: EFreqScaleMode) {
+        drawStaticPhase(this.overlayCallbacks(), ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, cursor, freqScaleMode);
     }
     /**
      * Draws the scope in spectrogram mode.
@@ -232,10 +277,13 @@ export class StaticScope {
      * @param {TDrawOptions} drawOptions The data and options for drawing.
      * @param {EScopeMode} mode The current scope mode.
      * @param {EFreqScaleMode} [freqScaleMode] The frequency scale mode.
+     * @param {MagnitudeScaleMode} [magnitudeScaleMode] The magnitude unit mapping.
+     * @param {number} magnitudeDbMin The lower dB-axis limit.
+     * @param {number} magnitudeDbMax The upper dB-axis limit.
      * @returns {[number, { type: string; data: any }[]][]} An array of events to be drawn.
      */
-    static drawGrid(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawStartValue: number, drawEndValue: number, stabilizationOffset: number, verticalScaleFactor: number, drawOptions: TDrawOptions, mode: EScopeMode, freqScaleMode?: EFreqScaleMode) {
-        return drawStaticScopeGrid(ctx, canvasWidth, canvasHeight, drawStartValue, drawEndValue, stabilizationOffset, verticalScaleFactor, drawOptions, mode, freqScaleMode);
+    static drawGrid(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawStartValue: number, drawEndValue: number, stabilizationOffset: number, verticalScaleFactor: number, drawOptions: TDrawOptions, mode: EScopeMode, freqScaleMode?: EFreqScaleMode, magnitudeScaleMode?: MagnitudeScaleMode, magnitudeDbMin = -100, magnitudeDbMax = 0) {
+        return drawStaticScopeGrid(ctx, canvasWidth, canvasHeight, drawStartValue, drawEndValue, stabilizationOffset, verticalScaleFactor, drawOptions, mode, freqScaleMode, magnitudeScaleMode, magnitudeDbMin, magnitudeDbMax);
     }
     /**
      * Draws event information on the canvas.
@@ -257,6 +305,12 @@ export class StaticScope {
      */
     static drawStats(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, statsToDraw: TStatsToDraw) {
         drawStaticScopeStats(ctx, canvasWidth, canvasHeight, statsToDraw);
+    }
+    /**
+     * Draws the current waveform selection and its duration label.
+     */
+    static drawSelection(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, xStart: number, xEnd: number, sampleCount: number, sampleRate?: number) {
+        drawStaticWaveformSelection(ctx, canvasWidth, canvasHeight, xStart, xEnd, sampleCount, sampleRate);
     }
     /**
      * Fills a div with a table-like view of the raw data.
@@ -293,6 +347,7 @@ export class StaticScope {
         this.bind();
         this.mode = EScopeMode.Oscilloscope;
         this.freqScaleMode = EFreqScaleMode.Logarithmic;
+        this.magnitudeScaleMode = MagnitudeScaleMode.Decibels;
     }
     /**
      * Finds or creates the necessary child DOM elements for the scope.
@@ -305,13 +360,19 @@ export class StaticScope {
      */
     bind() {
         this.btnSwitch.addEventListener("click", () => {
-            let newType = (this.mode + 1) % 5;
-            if (newType === EScopeMode.Spectrogram && !this.drawSpectrogram) newType = (newType + 1) % 5;
-            if (newType === EScopeMode.Data && this.data.drawMode === "continuous") newType = (newType + 1) % 5;
-            if (newType === EScopeMode.Interleaved && this.data.timeDomainData && this.data.timeDomainData.length === 1) newType = (newType + 1) % 5;
+            let newType = this.mode;
+            for (let attempts = 0; attempts < 6; attempts++) {
+                newType = (newType + 1) % 6;
+                if (newType === EScopeMode.Spectrogram && !this.drawSpectrogram) continue;
+                if (newType === EScopeMode.Phase && (!this.data.phaseDomainData || !this.data.phaseDomainData.length)) continue;
+                if (newType === EScopeMode.Data && this.data.drawMode === "continuous") continue;
+                if (newType === EScopeMode.Interleaved && this.data.timeDomainData && this.data.timeDomainData.length === 1) continue;
+                break;
+            }
             this.mode = newType;
         });
-        this.canvas.addEventListener("click", () => {
+        this.canvas.addEventListener("dblclick", (event) => {
+            handleStaticScopeDoubleClick(this, event);
         });
         this.canvas.addEventListener("wheel", (e) => {
             handleStaticScopeWheel(this, e);
@@ -331,9 +392,30 @@ export class StaticScope {
         this.btnScale.addEventListener("click", () => {
             this.freqScaleMode = (this.freqScaleMode + 1) % 2;
         });
+        this.btnMagnitude.addEventListener("click", () => {
+            this.magnitudeScaleMode = (this.magnitudeScaleMode + 1) % 2;
+        });
+        this.inputMagnitudeDbMin.addEventListener("change", () => {
+            this.magnitudeDbMin = this.inputMagnitudeDbMin.valueAsNumber;
+        });
+        this.inputMagnitudeDbMax.addEventListener("change", () => {
+            this.magnitudeDbMax = this.inputMagnitudeDbMax.valueAsNumber;
+        });
         this.btnDownload.addEventListener("click", () => {
             const csv = buildScopeCsv(this.mode, this.data);
             if (csv) downloadTextFile(csv, "data.csv");
+        });
+        this.canvas.addEventListener("copy", (event) => {
+            if (
+                !this.selection
+                || (this.mode !== EScopeMode.Interleaved && this.mode !== EScopeMode.Oscilloscope)
+                || !event.clipboardData
+            ) return;
+            const csv = getSelectedWaveformCsv(this.data, this.selection);
+            if (!csv) return;
+            event.clipboardData.setData("text/plain", csv);
+            event.clipboardData.setData("text/csv", csv);
+            event.preventDefault();
         });
         this.canvas.addEventListener("mousedown", this.handleMouseDown);
         this.canvas.addEventListener("touchstart", this.handleMouseDown);
@@ -377,16 +459,19 @@ export class StaticScope {
                 StaticScope.fillDivData(this.divData, this.data);
                 break;
             case EScopeMode.Interleaved:
-                StaticScope.drawInterleaved(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor);
+                StaticScope.drawInterleaved(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor, this.selection);
                 break;
             case EScopeMode.Oscilloscope:
-                StaticScope.drawOscilloscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor);
+                StaticScope.drawOscilloscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor, this.selection);
                 break;
             case EScopeMode.Spectroscope:
-                StaticScope.drawSpectroscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.cursor, this.freqScaleMode);
+                StaticScope.drawSpectroscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.cursor, this.freqScaleMode, this.magnitudeScaleMode, this.magnitudeDbMin, this.magnitudeDbMax);
                 break;
             case EScopeMode.Spectrogram:
                 StaticScope.drawSpectrogram(this.ctx, this.spectTempCtx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.cursor, this.freqScaleMode);
+                break;
+            case EScopeMode.Phase:
+                StaticScope.drawPhase(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.cursor, this.freqScaleMode);
                 break;
         }
 
@@ -402,6 +487,7 @@ export class StaticScope {
                 this.lastSpect$ = 0; // Reset spectrogram canvas if data structure changes
             }
             this.data = data;
+            this.selection = undefined;
             this.newDataArrived = true;
         }
         if (this.raf) return; // Don't queue up multiple frames
@@ -409,14 +495,16 @@ export class StaticScope {
     }
     /**
      * Gets the zoom type string based on the current mode.
-     * @type {("spectroscope" | "spectrogram" | "oscilloscope")}
+     * @type {("spectroscope" | "spectrogram" | "phase" | "oscilloscope")}
      */
     get zoomType(): ScopeZoomType {
         return this.mode === EScopeMode.Spectroscope
             ? "spectroscope"
             : this.mode === EScopeMode.Spectrogram
                 ? "spectrogram"
-                : "oscilloscope";
+                : this.mode === EScopeMode.Phase
+                    ? "phase"
+                    : "oscilloscope";
     }
     /**
      * Gets the current vertical zoom level for the active mode.
@@ -444,8 +532,13 @@ export class StaticScope {
      * @type {number}
      */
     set zoom(newZoom: number) {
-        const dataArray = this.inFreqDomain ? this.data.freqDomainData : this.data.timeDomainData;
-        const maxZoom = dataArray && dataArray[0] ? Math.max(16, this.mode === EScopeMode.Spectroscope ? 64 : dataArray[0].length / (this.inFreqDomain ? this.data.fftSize / 2 : this.data.bufferSize)) : 16;
+        const dataArray = this.mode === EScopeMode.Phase ? this.data.phaseDomainData : this.inFreqDomain ? this.data.freqDomainData : this.data.timeDomainData;
+        let pointCount = dataArray && dataArray[0] ? dataArray[0].length : 0;
+        if (this.mode === EScopeMode.Spectroscope || this.mode === EScopeMode.Phase) pointCount = this.data.fftSize / 2;
+        else if (this.mode === EScopeMode.Spectrogram) pointCount /= this.data.fftSize / 2;
+        const maxZoom = pointCount
+            ? Math.max(16, Math.min(MAX_HORIZONTAL_ZOOM, pointCount / 2))
+            : 16;
 
         const canvasWidth = this.canvas.width;
         let cursorPositionRatio = 0.5;
@@ -493,6 +586,48 @@ export class StaticScope {
         this.spectTempCtx.clearRect(0, 0, this.spectTempCtx.canvas.width, this.spectTempCtx.canvas.height);
         this.draw();
     }
+    /** Gets the active magnitude mapping for the spectrum panel. */
+    get magnitudeScaleMode() {
+        return this._magnitudeScaleMode;
+    }
+    /** Switches spectrum values between dBFS and normalized linear amplitude. */
+    set magnitudeScaleMode(newMode: MagnitudeScaleMode) {
+        this._magnitudeScaleMode = newMode;
+        updateStaticScopeMagnitudeButton(this.btnMagnitude, newMode);
+        this.divMagnitudeDbRange.style.display = this.mode === EScopeMode.Spectroscope
+            && newMode === MagnitudeScaleMode.Decibels
+            ? ""
+            : "none";
+        this.draw();
+    }
+    /** Gets the lower dB limit used by the magnitude plot. */
+    get magnitudeDbMin() {
+        return this._magnitudeDbMin;
+    }
+    /** Sets the lower dB limit when it remains below the upper limit. */
+    set magnitudeDbMin(newMinimum: number) {
+        if (!Number.isFinite(newMinimum) || newMinimum >= this.magnitudeDbMax) {
+            this.inputMagnitudeDbMin.value = `${this._magnitudeDbMin}`;
+            return;
+        }
+        this._magnitudeDbMin = newMinimum;
+        this.inputMagnitudeDbMin.value = `${newMinimum}`;
+        this.draw();
+    }
+    /** Gets the upper dB limit used by the magnitude plot. */
+    get magnitudeDbMax() {
+        return this._magnitudeDbMax;
+    }
+    /** Sets the upper dB limit when it remains above the lower limit. */
+    set magnitudeDbMax(newMaximum: number) {
+        if (!Number.isFinite(newMaximum) || newMaximum <= this.magnitudeDbMin) {
+            this.inputMagnitudeDbMax.value = `${this._magnitudeDbMax}`;
+            return;
+        }
+        this._magnitudeDbMax = newMaximum;
+        this.inputMagnitudeDbMax.value = `${newMaximum}`;
+        this.draw();
+    }
     /**
      * Gets the current scope display mode.
      * @type {EScopeMode}
@@ -516,7 +651,10 @@ export class StaticScope {
             btnZoom: this.btnZoom,
             btnZoomIn: this.btnZoomIn,
             btnZoomOut: this.btnZoomOut,
-            btnScale: this.btnScale
+            btnScale: this.btnScale,
+            btnMagnitude: this.btnMagnitude,
+            divMagnitudeDbRange: this.divMagnitudeDbRange,
+            magnitudeScaleMode: this.magnitudeScaleMode
         });
         this.draw();
     }
@@ -526,6 +664,6 @@ export class StaticScope {
      * @type {boolean}
      */
     get inFreqDomain() {
-        return this.mode === EScopeMode.Spectrogram || this.mode === EScopeMode.Spectroscope;
+        return this.mode === EScopeMode.Spectrogram || this.mode === EScopeMode.Spectroscope || this.mode === EScopeMode.Phase;
     }
 }

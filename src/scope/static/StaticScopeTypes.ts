@@ -27,6 +27,14 @@ export type TStatsToDraw = {
     values: number[];
 };
 
+/** Logical half-open sample range selected in a static waveform. */
+export type TWaveformSelection = {
+    /** First selected sample in chronological display order. */
+    startSampleIndex: number;
+    /** First sample after the selected range. */
+    endSampleIndex: number;
+};
+
 /**
  * Defines the data and options required for a drawing operation.
  */
@@ -41,6 +49,8 @@ export type TDrawOptions = {
     timeDomainData?: Float32Array[];
     /** Frequency domain data for each channel */
     freqDomainData?: Float32Array[];
+    /** Wrapped FFT phase data in radians for each channel */
+    phaseDomainData?: Float32Array[];
     /** Events associated with each buffer */
     events?: { type: string; data: any }[][];
     /** The size of each data buffer */

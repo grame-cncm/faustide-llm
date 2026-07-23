@@ -615,7 +615,7 @@ The blueprint is explicit that the perimeter is **project-specific** and must be
   - `library("X.lib")` — pull a `.lib` and bind it to a name.
   - `component("X.dsp")` — embed another DSP file.
   - `soundfile("name", channels)` — reference a project-local audio file.
-  
+
   Include only **project-local** files — **exclude** the bundled standard
   libraries (`stdfaust.lib` and the libs it re-exports), which the compiler
   resolves from its own libraries dir and which must not be duplicated into a

@@ -1,9 +1,10 @@
 import { clampZoomOffset } from "../FrequencyScale";
 
-/** The three independent zoom contexts, one per family of static scope modes. */
-export type ScopeZoomType = "oscilloscope" | "spectroscope" | "spectrogram";
+/** Independent zoom contexts for each family of static scope modes. */
+export type ScopeZoomType = "oscilloscope" | "spectroscope" | "spectrogram" | "phase";
 
-const MAX_VERTICAL_ZOOM = 16;
+const MIN_VERTICAL_ZOOM = 1 / 64;
+const MAX_VERTICAL_ZOOM = 64;
 
 /**
  * Per-mode horizontal/vertical zoom and pan state for the static scope, with the
@@ -12,17 +13,17 @@ const MAX_VERTICAL_ZOOM = 16;
  * DOM/cursor/data orchestration around it.
  */
 export class ScopeViewState {
-    private zoomByType = { oscilloscope: 1, spectroscope: 1, spectrogram: 1 };
-    private vzoomByType = { oscilloscope: 1, spectroscope: 1, spectrogram: 1 };
-    private zoomOffsetByType = { oscilloscope: 0, spectroscope: 0, spectrogram: 0 };
+    private zoomByType = { oscilloscope: 1, spectroscope: 1, spectrogram: 1, phase: 1 };
+    private vzoomByType = { oscilloscope: 1, spectroscope: 1, spectrogram: 1, phase: 1 };
+    private zoomOffsetByType = { oscilloscope: 0, spectroscope: 0, spectrogram: 0, phase: 0 };
 
     getVerticalZoom(type: ScopeZoomType): number {
         return this.vzoomByType[type];
     }
 
-    /** Sets the vertical zoom, clamped to [1, 16]. */
+    /** Sets the vertical zoom, clamped to [1/64, 64]. */
     setVerticalZoom(type: ScopeZoomType, newZoom: number): void {
-        this.vzoomByType[type] = Math.min(MAX_VERTICAL_ZOOM, Math.max(1, newZoom));
+        this.vzoomByType[type] = Math.min(MAX_VERTICAL_ZOOM, Math.max(MIN_VERTICAL_ZOOM, newZoom));
     }
 
     getZoom(type: ScopeZoomType): number {
@@ -53,7 +54,7 @@ export class ScopeViewState {
 
     /** Resets horizontal zoom and offset for all modes (vertical zoom is kept). */
     reset(): void {
-        this.zoomByType = { oscilloscope: 1, spectroscope: 1, spectrogram: 1 };
-        this.zoomOffsetByType = { oscilloscope: 0, spectroscope: 0, spectrogram: 0 };
+        this.zoomByType = { oscilloscope: 1, spectroscope: 1, spectrogram: 1, phase: 1 };
+        this.zoomOffsetByType = { oscilloscope: 0, spectroscope: 0, spectrogram: 0, phase: 0 };
     }
 }

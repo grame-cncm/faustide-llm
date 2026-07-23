@@ -1,5 +1,6 @@
-import type { TDrawOptions } from "../../StaticScope";
+import type { TDrawOptions, TWaveformSelection } from "./StaticScopeTypes";
 import { StaticScopeMode } from "../ScopeModes";
+import { getVisibleTimeDomainWindow } from "./TimeDomainRenderer";
 import {
     STATIC_SCOPE_BOTTOM_MARGIN,
     STATIC_SCOPE_LEFT_MARGIN
@@ -16,7 +17,9 @@ export type StaticScopeInteractionTarget = {
     canvas: HTMLCanvasElement;
     /** Current cursor position sampled by renderers. */
     cursor?: { x: number; y: number };
-    /** True while a pointer drag is panning the visible window. */
+    /** Selected logical sample range in a non-continuous waveform. */
+    selection?: TWaveformSelection;
+    /** True while a pointer drag is panning or selecting the visible window. */
     dragging: boolean;
     /** Active horizontal zoom for the current mode. */
     zoom: number;
@@ -37,6 +40,44 @@ const canInteractWithCanvas = (target: StaticScopeInteractionTarget) =>
 
 const getPageX = (event: MouseEvent | TouchEvent) =>
     event instanceof MouseEvent ? event.pageX : event.touches[0].pageX;
+
+const getCanvasPoint = (
+    target: StaticScopeInteractionTarget,
+    event: MouseEvent | TouchEvent,
+    preferCanvasOffset = false
+) => {
+    const rect = target.canvas.getBoundingClientRect();
+    if (event instanceof MouseEvent) {
+        return preferCanvasOffset
+            ? { x: event.offsetX, y: event.offsetY }
+            : { x: event.pageX - rect.left, y: event.pageY - rect.top };
+    }
+    return {
+        x: event.touches[0].pageX - rect.left,
+        y: event.touches[0].pageY - rect.top
+    };
+};
+
+const isWaveformMode = (mode: StaticScopeMode) =>
+    mode === StaticScopeMode.Oscilloscope || mode === StaticScopeMode.Interleaved;
+
+const getSelectionSampleIndex = (
+    target: StaticScopeInteractionTarget,
+    canvasX: number
+) => {
+    const bufferLength = target.data.timeDomainData[0].length;
+    const { drawStartIndex, drawEndIndex } = getVisibleTimeDomainWindow(
+        target.data,
+        target.zoom,
+        target.zoomOffset
+    );
+    const drawableWidth = Math.max(1, target.canvas.width - STATIC_SCOPE_LEFT_MARGIN);
+    const position = Math.max(0, Math.min(1, (canvasX - STATIC_SCOPE_LEFT_MARGIN) / drawableWidth));
+    return Math.max(
+        0,
+        Math.min(bufferLength, Math.round(drawStartIndex + position * (drawEndIndex - drawStartIndex)))
+    );
+};
 
 /**
  * Updates the renderer cursor from a mouse or touch event.
@@ -81,9 +122,60 @@ export const handleStaticScopePointerDown = (
     eventDown: MouseEvent | TouchEvent
 ) => {
     if (!canInteractWithCanvas(target)) return;
+    const point = getCanvasPoint(target, eventDown, true);
+    if (
+        point.x < STATIC_SCOPE_LEFT_MARGIN
+        || point.y >= target.canvas.height - STATIC_SCOPE_BOTTOM_MARGIN
+    ) return;
     eventDown.preventDefault();
     eventDown.stopPropagation();
     target.dragging = true;
+    target.canvas.focus();
+
+    const selecting = eventDown instanceof MouseEvent
+        && !eventDown.altKey
+        && target.data.drawMode !== "continuous"
+        && isWaveformMode(target.mode);
+
+    if (selecting) {
+        const anchorSampleIndex = getSelectionSampleIndex(target, point.x);
+        target.selection = {
+            startSampleIndex: anchorSampleIndex,
+            endSampleIndex: anchorSampleIndex
+        };
+        target.canvas.style.cursor = "crosshair";
+        target.draw();
+
+        const handleSelectionMove = (moveEvent: MouseEvent | TouchEvent) => {
+            const currentPoint = getCanvasPoint(target, moveEvent);
+            const currentSampleIndex = getSelectionSampleIndex(target, currentPoint.x);
+            target.selection = {
+                startSampleIndex: Math.min(anchorSampleIndex, currentSampleIndex),
+                endSampleIndex: Math.max(anchorSampleIndex, currentSampleIndex)
+            };
+            target.draw();
+        };
+
+        const handleSelectionEnd = () => {
+            target.dragging = false;
+            target.canvas.style.cursor = "";
+            if (target.selection.startSampleIndex === target.selection.endSampleIndex) {
+                target.selection = undefined;
+                target.draw();
+            }
+            document.removeEventListener("mousemove", handleSelectionMove);
+            document.removeEventListener("touchmove", handleSelectionMove);
+            document.removeEventListener("mouseup", handleSelectionEnd);
+            document.removeEventListener("touchend", handleSelectionEnd);
+        };
+
+        document.addEventListener("mousemove", handleSelectionMove);
+        document.addEventListener("touchmove", handleSelectionMove);
+        document.addEventListener("mouseup", handleSelectionEnd);
+        document.addEventListener("touchend", handleSelectionEnd);
+        return;
+    }
+
     target.canvas.style.cursor = "grab";
     const originalZoom = target.zoom;
     const originalOffset = target.zoomOffset;
@@ -114,17 +206,50 @@ export const handleStaticScopePointerDown = (
 };
 
 /**
+ * Resets only the axis whose gutter receives a double-click.
+ */
+export const handleStaticScopeDoubleClick = (
+    target: StaticScopeInteractionTarget,
+    event: MouseEvent
+) => {
+    if (!canInteractWithCanvas(target)) return;
+    const x = event.offsetX;
+    const y = event.offsetY;
+
+    if (x < STATIC_SCOPE_LEFT_MARGIN && y < target.canvas.height - STATIC_SCOPE_BOTTOM_MARGIN) {
+        if (target.mode === StaticScopeMode.Spectroscope) return;
+        event.preventDefault();
+        target.vzoom = 1;
+        target.draw();
+        return;
+    }
+
+    if (x >= STATIC_SCOPE_LEFT_MARGIN && y >= target.canvas.height - STATIC_SCOPE_BOTTOM_MARGIN) {
+        event.preventDefault();
+        target.zoom = 1;
+        target.zoomOffset = 0;
+        target.draw();
+    }
+};
+
+/**
  * Applies wheel interaction for vertical zoom, horizontal zoom, and trackpad pan.
  */
 export const handleStaticScopeWheel = (
     target: StaticScopeInteractionTarget,
     event: WheelEvent
 ) => {
+    event.preventDefault();
     const leftMargin = STATIC_SCOPE_LEFT_MARGIN;
     const bottomMargin = STATIC_SCOPE_BOTTOM_MARGIN;
-    const multiplier = 1.5 ** (event.deltaY > 0 ? -1 : 1);
+    const multiplier = event.deltaY === 0 ? 1 : 1.5 ** (event.deltaY > 0 ? -1 : 1);
+
+    // Update the cursor before changing zoom. StaticScope's zoom setter uses
+    // this position to keep the sample/frequency under the pointer fixed.
+    handleStaticScopePointerMove(target, event);
 
     if (event.offsetX < leftMargin && event.offsetY < target.canvas.height - bottomMargin) {
+        if (target.mode === StaticScopeMode.Spectroscope) return;
         if (multiplier !== 1) target.vzoom *= 1 / multiplier;
         target.draw();
         return;
@@ -132,5 +257,5 @@ export const handleStaticScopeWheel = (
 
     if (multiplier !== 1) target.zoom *= multiplier;
     if (event.deltaX !== 0) target.zoomOffset += (event.deltaX > 0 ? 1 : -1) * 0.1;
-    handleStaticScopePointerMove(target, event);
+    target.draw();
 };

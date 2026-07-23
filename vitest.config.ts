@@ -21,13 +21,12 @@ export default defineConfig({
             // Anti-regression ratchet, not a target. Floors sit just below the
             // current measured coverage so the suite cannot silently backslide.
             // The whole src tree stays counted. Raise these whenever coverage
-            // improves (e.g. after the scope, MeterNode, and monaco-faust passes
-            // that lifted statements from ~41% to ~76%).
+            // improves.
             thresholds: {
-                statements: 73,
-                branches: 58,
-                functions: 72,
-                lines: 76
+                statements: 80.4,
+                branches: 67.8,
+                functions: 78.5,
+                lines: 83.3
             }
         }
     }

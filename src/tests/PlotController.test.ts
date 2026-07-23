@@ -18,6 +18,7 @@ const createCompileOptions = () => ({
     plotSR: 48000,
     plotFFT: 256 as const,
     plotFFTOverlap: 2 as const,
+    plotFFTWindow: "auto" as const,
     drawSpectrogram: false,
     args: ["-I", "/project"],
     enableGuiBuilder: false,
@@ -33,6 +34,7 @@ const createUiEnv = () => ({
         buffers: 0,
         fftSize: 256,
         fftOverlap: 2,
+        fftWindow: "auto",
         draw: vi.fn(),
         plotHandler: vi.fn()
     },
@@ -63,6 +65,12 @@ const setupDom = () => {
         <input id="check-draw-spectrogram" type="checkbox" />
         <select id="select-plot-fftsize"></select>
         <select id="select-plot-fftoverlap"></select>
+        <select id="select-plot-fftwindow">
+            <option value="auto">Auto</option>
+            <option value="rectangular">Rectangular</option>
+            <option value="hann">Hann</option>
+            <option value="blackman">Blackman</option>
+        </select>
     `;
 };
 
@@ -87,8 +95,10 @@ describe("PlotController", () => {
             saveEditorParams
         }).bind();
 
+        uiEnv.plotScope.mode = 3;
         $("#select-plot-mode").val("manual").trigger("change");
         expect(compileOptions.plotMode).toBe("manual");
+        expect(uiEnv.plotScope.mode).toBe(3);
         expect($("#btn-plot").css("display")).not.toBe("none");
         expect($("#btn-plot span").text()).toBe("Plot (Snapshot)");
         expect($("#input-plot-sr").prop("disabled")).toBe(true);
@@ -97,7 +107,7 @@ describe("PlotController", () => {
 
         $("#select-plot-mode").val("continuous").trigger("change");
         expect($("#btn-plot").css("display")).toBe("none");
-        expect(uiEnv.plotScope.mode).toBe(2);
+        expect(uiEnv.plotScope.mode).toBe(3);
     });
 
     it("quantizes sample count and updates analyser buffer count", () => {
@@ -120,6 +130,28 @@ describe("PlotController", () => {
         expect(compileOptions.plot).toBe(512);
         expect(uiEnv.analyser.buffers).toBe(4);
         expect($("#input-plot-samps").attr("step")).toBe("256");
+        expect(saveEditorParams).toHaveBeenCalled();
+    });
+
+    it("updates and persists the FFT window selection", () => {
+        const compileOptions = createCompileOptions();
+        const uiEnv = createUiEnv();
+        const saveEditorParams = vi.fn();
+        new PlotController({
+            compileOptions: compileOptions as any,
+            audioEnv: { dspConnectedToInput: false, dspConnectedToOutput: false, inputEnabled: false, outputEnabled: false } as any,
+            uiEnv: uiEnv as any,
+            faustCompiler: {} as any,
+            dspRunner: {} as any,
+            getMainCode: () => "process = _;",
+            runDsp: vi.fn(),
+            saveEditorParams
+        }).bind();
+
+        $("#select-plot-fftwindow").val("blackman").trigger("change");
+
+        expect(compileOptions.plotFFTWindow).toBe("blackman");
+        expect(uiEnv.analyser.fftWindow).toBe("blackman");
         expect(saveEditorParams).toHaveBeenCalled();
     });
 
