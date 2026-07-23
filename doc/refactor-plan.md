@@ -11,7 +11,7 @@ This document records the `src/index.ts` refactor plan and the current post-refa
 - The remaining dense code in `index.ts` is deliberate wiring: cross-controller callback bridges, late-bound controller references, browser globals such as `navigator.mediaDevices`, and compatibility exposure.
 - The shared mutable runtime environment (`FaustEditor*Env`) is no longer written by reference from many sites: Phase 12 routed every audio/scope mutation and the DSP graph connect/disconnect through `AudioGraphState`/`ScopeState`, and named the run/diagram seam (`RuntimeActions`). The composition root has a single remaining late binding (`dspCompileController`), a genuine initialization cycle.
 - Static plots now retain magnitude and phase from one FFT pass, support automatic/rectangular/Hann/Blackman FFT windows, default offline analysis to an unscaled rectangular FFT so a unit impulse is flat at 0 dB with zero phase, retain the reference plotter's symmetric-Hann plus `N/4` convention, support dBFS/linear-amplitude magnitude views, expose a phase mode, use zoom-aware linear/log frequency ticks, and keep cursor-anchored zoom state over a wider horizontal and vertical range. Waveform plots add sample-rate-derived second ticks, drag selection with sample/time duration and clipboard CSV export, axis-specific double-click zoom reset, and a column-major Data view.
-- Generated Faust UI messages use the native browser event boundary, and remembered parameters are resent after iframe readiness so the control display matches the values restored into a newly compiled DSP.
+- Generated Faust UI messages use the native browser event boundary, and remembered parameters are resent to both the embedded UI and an already-open popup so their controls match the values restored into a newly compiled DSP.
 - The planned structural extraction work is complete through Phase 11 (scope rendering factorization). Remaining work is manual validation and normal maintenance, not another large extraction pass.
 
 ## Target architecture
@@ -71,8 +71,8 @@ The plan above is driven by characterization testing: behavior is locked down wi
 | Layer | Tool | Script | Scope |
 |-------|------|--------|-------|
 | Lint / style | ESLint + Stylelint | `npm test` (`test-eslint`, `test-stylelint`) | static quality gate |
-| Unit / jsdom integration | Vitest | `npm run test:unit` (`:watch`, `test:coverage`) | 69 files, 311 tests; 78.18% statements / 64.00% branches / 77.01% functions / 81.24% lines |
-| Browser end-to-end | Playwright | `npm run test:e2e` | 73 tests against the built `dist/` |
+| Unit / jsdom integration | Vitest | `npm run test:unit` (`:watch`, `test:coverage`) | 69 files, 312 tests; 78.18% statements / 64.00% branches / 77.01% functions / 81.24% lines |
+| Browser end-to-end | Playwright | `npm run test:e2e` | 74 tests against the built `dist/` |
 
 ### Unit and integration layer (Vitest)
 
@@ -89,7 +89,7 @@ The plan above is driven by characterization testing: behavior is locked down wi
 
 - Config in `playwright.config.ts`: a minimal static server (`tests/e2e/serve-dist.cjs`) serves the built `dist/` on `http://127.0.0.1:4173`, so e2e exercises the production artifact, not the source.
 - `tests/e2e/app-smoke.spec.ts` validates high-level behavior that jsdom cannot cover reliably: app load plus `window.faustEnv` exposure, default `untitled.dsp` project, Monaco editing updating the selected file, deleting the last file recreating the default DSP, export targets populated from a mocked `faustservice.inria.fr/targets` route, and the share URL containing name/voices/autorun/inline code.
-- Additional e2e specs cover real example compilation, DSP replacement, diagram navigation and zoom, plot/scopes, panels, settings, MIDI, file manager behavior, and export modal wiring.
+- Additional e2e specs cover real example compilation, DSP replacement, embedded and popup Faust UI parameter restoration, diagram navigation and zoom, plot/scopes, panels, settings, MIDI, file manager behavior, and export modal wiring.
 - External Faust service requests are mocked via `page.route`. Real audio hardware, popup blockers, and production Faust service export stay in the manual checklist.
 
 ## Phase 1: test harness before refactoring
