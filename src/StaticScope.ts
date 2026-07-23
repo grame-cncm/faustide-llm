@@ -266,7 +266,7 @@ export class StaticScope {
             drawStats: this.drawStats.bind(this)
         }, ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, cursor, freqScaleMode, magnitudeScaleMode);
     }
-    /** Draws wrapped FFT phase in radians on the selected frequency scale. */
+    /** Draws wrapped FFT phase with degree-labelled output on the selected frequency scale. */
     static drawPhase(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, cursor: { x: number; y: number }, freqScaleMode: EFreqScaleMode) {
         drawStaticPhase({
             drawBackground: this.drawBackground.bind(this),
