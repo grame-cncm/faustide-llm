@@ -19,6 +19,7 @@ import {
     updateStaticScopeScaleButton
 } from "./scope/static/StaticScopeControls";
 import {
+    handleStaticScopeDoubleClick,
     handleStaticScopePointerDown,
     handleStaticScopePointerLeave,
     handleStaticScopePointerMove,
@@ -31,6 +32,12 @@ import {
     drawStaticScopeStats
 } from "./scope/static/StaticScopeOverlays";
 import "./StaticScope.scss";
+
+/** Deepest useful horizontal inspection range while retaining stable math. */
+const MAX_HORIZONTAL_ZOOM = 4096;
+/** Vertical scale range: values below one zoom into amplitude, above one zoom out. */
+const MIN_VERTICAL_ZOOM = 1 / 64;
+const MAX_VERTICAL_ZOOM = 64;
 
 /**
  * Options for initializing the StaticScope instance.
@@ -398,7 +405,8 @@ export class StaticScope {
             }
             this.mode = newType;
         });
-        this.canvas.addEventListener("click", () => {
+        this.canvas.addEventListener("dblclick", (event) => {
+            handleStaticScopeDoubleClick(this, event);
         });
         this.canvas.addEventListener("wheel", (e) => {
             handleStaticScopeWheel(this, e);
@@ -581,8 +589,7 @@ export class StaticScope {
      * @type {number}
      */
     set vzoom(newZoom: number) {
-        const maxZoom = 16;
-        this._vzoom[this.zoomType] = Math.min(maxZoom, Math.max(1, newZoom));
+        this._vzoom[this.zoomType] = Math.min(MAX_VERTICAL_ZOOM, Math.max(MIN_VERTICAL_ZOOM, newZoom));
     }
     /**
      * Gets the current horizontal zoom level for the active mode.
@@ -596,8 +603,13 @@ export class StaticScope {
      * @type {number}
      */
     set zoom(newZoom: number) {
-        const dataArray = this.inFreqDomain ? this.data.freqDomainData : this.data.timeDomainData;
-        const maxZoom = dataArray && dataArray[0] ? Math.max(16, this.mode === EScopeMode.Spectroscope ? 64 : dataArray[0].length / (this.inFreqDomain ? this.data.fftSize / 2 : this.data.bufferSize)) : 16;
+        const dataArray = this.mode === EScopeMode.Phase ? this.data.phaseDomainData : this.inFreqDomain ? this.data.freqDomainData : this.data.timeDomainData;
+        let pointCount = dataArray && dataArray[0] ? dataArray[0].length : 0;
+        if (this.mode === EScopeMode.Spectroscope || this.mode === EScopeMode.Phase) pointCount = this.data.fftSize / 2;
+        else if (this.mode === EScopeMode.Spectrogram) pointCount /= this.data.fftSize / 2;
+        const maxZoom = pointCount
+            ? Math.max(16, Math.min(MAX_HORIZONTAL_ZOOM, pointCount / 2))
+            : 16;
 
         const canvasWidth = this.canvas.width;
         let cursorPositionRatio = 0.5;
