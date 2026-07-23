@@ -8,7 +8,10 @@ import {
 } from "./scope/ScopeModes";
 import { drawCanvasBackground } from "./scope/CanvasDrawing";
 import { clampZoomOffset } from "./scope/FrequencyScale";
-import { fillStaticScopeDataTable } from "./scope/static/DataTableRenderer";
+import {
+    fillStaticScopeDataTable,
+    getSelectedWaveformCsv
+} from "./scope/static/DataTableRenderer";
 import { drawStaticInterleaved, drawStaticOscilloscope } from "./scope/static/TimeDomainRenderer";
 import { drawStaticPhase, drawStaticSpectroscope } from "./scope/static/FrequencyRenderer";
 import { drawStaticOfflineSpectrogram, drawStaticSpectrogram } from "./scope/static/SpectrogramRenderer";
@@ -29,7 +32,8 @@ import { STATIC_SCOPE_LEFT_MARGIN } from "./scope/static/StaticScopeLayout";
 import {
     drawStaticScopeEvent,
     drawStaticScopeGrid,
-    drawStaticScopeStats
+    drawStaticScopeStats,
+    drawStaticWaveformSelection
 } from "./scope/static/StaticScopeOverlays";
 import "./StaticScope.scss";
 
@@ -63,6 +67,14 @@ type TStatsToDraw = {
     yLabel?: string;
     /** The numerical values to display */
     values: number[];
+};
+
+/** Logical half-open sample range selected in a static waveform. */
+export type TWaveformSelection = {
+    /** First selected sample in chronological display order. */
+    startSampleIndex: number;
+    /** First sample after the selected range. */
+    endSampleIndex: number;
 };
 
 /**
@@ -151,6 +163,8 @@ export class StaticScope {
     data: TDrawOptions = { drawMode: "manual", timeDomainData: undefined, startSampleIndex: 0, startBufferIndex: 0, bufferSize: 128, fftSize: 256, fftOverlap: 2 };
     /** Current cursor position on the canvas */
     cursor: { x: number; y: number };
+    /** Current waveform sample selection, if any. */
+    selection?: TWaveformSelection;
     /** Flag indicating if the user is currently dragging the mouse */
     dragging: boolean = false;
     /** A temporary 2D context for rendering the spectrogram offline */
@@ -185,7 +199,7 @@ export class StaticScope {
     /**
      * Draws the scope in interleaved mode.
      * The core principle is to display each channel's waveform in its own horizontal strip.
-     * The y-axis within each strip represents amplitude, and the x-axis represents time (in samples).
+     * The y-axis within each strip represents amplitude, and the x-axis represents time.
      * The view can be stabilized for periodic signals by finding a consistent zero-crossing point.
      * It also includes an optimization to draw min/max values for each horizontal pixel to represent the signal envelope accurately when zoomed out.
      * @param {CanvasRenderingContext2D} ctx The canvas rendering context.
@@ -197,18 +211,19 @@ export class StaticScope {
      * @param {number} verticalZoom The vertical zoom level.
      * @param {{ x: number; y: number }} [cursor] The current cursor position.
      */
-    static drawInterleaved(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }) {
+    static drawInterleaved(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }, selection?: TWaveformSelection) {
         drawStaticInterleaved({
             drawBackground: this.drawBackground.bind(this),
             drawGrid: this.drawGrid.bind(this),
             drawEvent: this.drawEvent.bind(this),
-            drawStats: this.drawStats.bind(this)
-        }, ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor);
+            drawStats: this.drawStats.bind(this),
+            drawSelection: this.drawSelection.bind(this)
+        }, ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor, selection);
     }
     /**
      * Draws the scope in oscilloscope mode.
      * This function overlays all channel waveforms in a single view, much like a traditional oscilloscope.
-     * The y-axis represents amplitude, and the x-axis represents time (in samples).
+     * The y-axis represents amplitude, and the x-axis represents time.
      * It shares the same stabilization and min/max drawing optimization logic as the interleaved mode.
      * @param {CanvasRenderingContext2D} ctx The canvas rendering context.
      * @param {number} canvasWidth The width of the canvas.
@@ -219,13 +234,14 @@ export class StaticScope {
      * @param {number} verticalZoom The vertical zoom level.
      * @param {{ x: number; y: number }} [cursor] The current cursor position.
      */
-    static drawOscilloscope(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }) {
+    static drawOscilloscope(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, drawOptions: TDrawOptions, horizontalZoom: number, horizontalZoomOffset: number, verticalZoom: number, cursor?: { x: number; y: number }, selection?: TWaveformSelection) {
         drawStaticOscilloscope({
             drawBackground: this.drawBackground.bind(this),
             drawGrid: this.drawGrid.bind(this),
             drawEvent: this.drawEvent.bind(this),
-            drawStats: this.drawStats.bind(this)
-        }, ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor);
+            drawStats: this.drawStats.bind(this),
+            drawSelection: this.drawSelection.bind(this)
+        }, ctx, canvasWidth, canvasHeight, drawOptions, horizontalZoom, horizontalZoomOffset, verticalZoom, cursor, selection);
     }
     /**
      * Draws the scope in spectroscope mode.
@@ -345,6 +361,12 @@ export class StaticScope {
      */
     static drawStats(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, statsToDraw: TStatsToDraw) {
         drawStaticScopeStats(ctx, canvasWidth, canvasHeight, statsToDraw);
+    }
+    /**
+     * Draws the current waveform selection and its duration label.
+     */
+    static drawSelection(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, xStart: number, xEnd: number, sampleCount: number, sampleRate?: number) {
+        drawStaticWaveformSelection(ctx, canvasWidth, canvasHeight, xStart, xEnd, sampleCount, sampleRate);
     }
     /**
      * Fills a div with a table-like view of the raw data.
@@ -489,6 +511,18 @@ export class StaticScope {
             a.target = "_blank";
             a.click();
         });
+        this.canvas.addEventListener("copy", (event) => {
+            if (
+                !this.selection
+                || (this.mode !== EScopeMode.Interleaved && this.mode !== EScopeMode.Oscilloscope)
+                || !event.clipboardData
+            ) return;
+            const csv = getSelectedWaveformCsv(this.data, this.selection);
+            if (!csv) return;
+            event.clipboardData.setData("text/plain", csv);
+            event.clipboardData.setData("text/csv", csv);
+            event.preventDefault();
+        });
         this.canvas.addEventListener("mousedown", this.handleMouseDown);
         this.canvas.addEventListener("touchstart", this.handleMouseDown);
         this.canvas.addEventListener("mousemove", this.handleMouseMove);
@@ -531,10 +565,10 @@ export class StaticScope {
                 StaticScope.fillDivData(this.divData, this.data);
                 break;
             case EScopeMode.Interleaved:
-                StaticScope.drawInterleaved(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor);
+                StaticScope.drawInterleaved(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor, this.selection);
                 break;
             case EScopeMode.Oscilloscope:
-                StaticScope.drawOscilloscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor);
+                StaticScope.drawOscilloscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.vzoom, this.cursor, this.selection);
                 break;
             case EScopeMode.Spectroscope:
                 StaticScope.drawSpectroscope(this.ctx, canvasWidth, canvasHeight, this.data, this.zoom, this.zoomOffset, this.cursor, this.freqScaleMode, this.magnitudeScaleMode);
@@ -559,6 +593,7 @@ export class StaticScope {
                 this.lastSpect$ = 0; // Reset spectrogram canvas if data structure changes
             }
             this.data = data;
+            this.selection = undefined;
             this.newDataArrived = true;
         }
         if (this.raf) return; // Don't queue up multiple frames
