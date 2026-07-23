@@ -24,10 +24,10 @@ export default defineConfig({
             // improves (e.g. after the scope, MeterNode, monaco-faust, and
             // magnitude/phase passes that lifted statements above 77%).
             thresholds: {
-                statements: 78,
-                branches: 64,
-                functions: 77,
-                lines: 81
+                statements: 78.4,
+                branches: 64.5,
+                functions: 77.2,
+                lines: 81.4
             }
         }
     }
