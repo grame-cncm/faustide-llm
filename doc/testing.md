@@ -6,7 +6,7 @@ The project has two distinct levels of tests, with three styles within the first
 
 ## Level 1 — Unit / integration tests (`src/tests/`) — Vitest + jsdom
 
-These 69 files run in Node.js with a simulated DOM (jsdom). They cover three styles:
+These tests run in Node.js with a simulated DOM (jsdom). They cover three styles:
 
 ### a) Pure logic tests
 
@@ -35,6 +35,17 @@ waveform ticks, axis-specific double-click reset, drag selection and its
 sample/time label, clipboard CSV serialization, and top-to-bottom Data columns.
 
 `src/tests/setup.ts` installs shared global mocks (`MockAudioContext`, `URL.createObjectURL`, `requestAnimationFrame`) before every test file.
+
+### b2) Filesystem coherence tests
+
+Filesystem-origin services are tested with structural fakes for browser file
+handles and mounted volumes. They do not use the real File System Access API or a
+real directory. `DiskCoherenceService.test.ts` mutates fake `getFile().text()`
+results to characterize external disk edits before write-back.
+
+`DiskCoherenceController.test.ts` keeps focus/visibility polling testable by
+injecting fake tracker/service/file-manager objects and dispatching jsdom
+`focus` events instead of using a real mounted directory.
 
 ### c) DOM controller tests
 
@@ -103,4 +114,4 @@ operating-system prompt. Real microphone and speaker checks remain manual.
 
 Files at 0% or low coverage require the E2E level to be exercised — `index.ts`, `FaustEditorFactory.ts`, `BootstrapLoaders.ts` — they are out of reach for jsdom by design, as they depend on a real browser environment (AudioWorklet, full DOM lifecycle, network asset loading).
 
-Coverage thresholds are configured in `vitest.config.ts` as anti-regression floors (currently statements ≥ 78.4%, branches ≥ 64.5%, functions ≥ 77.2%, lines ≥ 81.4%). They sit just below the current measured values so the suite cannot silently backslide; raise them whenever coverage improves.
+Coverage thresholds are configured in `vitest.config.ts` as anti-regression floors (currently statements ≥ 80.4%, branches ≥ 67.8%, functions ≥ 78.5%, lines ≥ 83.3%). They sit just below the current measured values so the suite cannot silently backslide; raise them whenever coverage improves.

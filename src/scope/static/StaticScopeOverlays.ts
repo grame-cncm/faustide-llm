@@ -1,4 +1,4 @@
-import type { TDrawOptions } from "../../StaticScope";
+import type { TDrawOptions } from "./StaticScopeTypes";
 import {
     FrequencyScaleMode as EFreqScaleMode,
     MagnitudeScaleMode,

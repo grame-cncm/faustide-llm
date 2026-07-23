@@ -1,6 +1,11 @@
 import "./FileManager.scss";
 import { ProjectModel } from "./model/ProjectModel";
 import type { TFileSystem } from "./model/ProjectModel";
+import { captureDroppedFileHandles, type DroppedFileHandleCallback } from "./runtime/fs/FileAccess";
+import { readPickedFileContent } from "./runtime/fs/VolumeFileActions";
+
+type SaveOptions = { immediate?: boolean; skipDiskSave?: boolean };
+type SaveHandler = (name: string, content: string | Uint8Array, mainCode: string, options?: SaveOptions) => Promise<void> | void;
 
 type TOptions = {
     container: HTMLDivElement;
@@ -8,7 +13,7 @@ type TOptions = {
     path?: string;
     mainFile?: string;
     selectHandler?: (name: string, content: string, mainCode: string) => any;
-    saveHandler?: (name: string, content: string | Uint8Array, mainCode: string) => any;
+    saveHandler?: SaveHandler;
     deleteHandler?: (name: string, mainCode: string) => any;
     mainFileChangeHandler?: (name: string, mainCode: string) => any;
 };
@@ -43,9 +48,11 @@ export class FileManager {
     private _fs: TFileSystem;
     private project: ProjectModel;
     selectHandler: (name: string, content: string, mainCode: string) => any = () => undefined;
-    saveHandler: (name: string, content: string | Uint8Array, mainCode: string) => any = () => undefined;
+    saveHandler: SaveHandler = () => undefined;
     deleteHandler?: (name: string, mainCode: string) => any = () => undefined;
     mainFileChangeHandler?: (name: string, mainCode: string) => any = () => undefined;
+    /** Called after a drag-and-drop save with the FS handle of the source file (Chrome only). */
+    onDroppedFileHandle?: DroppedFileHandleCallback;
 
     constructor(options: TOptions) {
         this.container = options.container;
@@ -131,7 +138,7 @@ export class FileManager {
             this.project.createFile(fileName, "");
             const divFile = this.createFileDiv(fileName, true);
             this.divFiles.appendChild(divFile);
-            if (this.saveHandler) this.saveHandler(fileName, "", this.mainCode);
+            void this.persistFile(fileName, "", { immediate: true });
             this.select(fileName);
             if (fileName.endsWith(".dsp")) this.setMain(this._fileList.length - 1);
             const spanName = divFile.getElementsByClassName("filemanager-filename")[0] as HTMLSpanElement;
@@ -161,27 +168,27 @@ export class FileManager {
             e.stopPropagation();
         };
         /**
-         * Drop a new file into file manager
-         * if the filename exists or has illegal name, replace it by `untitled\d*.dsp`
-         *
-         * @param {DragEvent} e
+         * Drop a file onto the file-manager overlay: read it, add it to the
+         * project, and (Chromium only) flag it as disk-tracked when it came from
+         * a mounted folder.  Audio files are read as binary, everything else as
+         * text; the name is sanitized by newFile() if it clashes or is illegal.
          */
-        const dropHandler = (e: DragEvent) => {
+        const dropHandler = async (e: DragEvent) => {
             this.divOverlay.style.display = "";
-            if (e.dataTransfer && e.dataTransfer.files.length) {
-                e.preventDefault();
-                e.stopPropagation();
-                const file = e.dataTransfer.files[0];
-                const reader = new FileReader();
-                reader.onload = () => {
-                    const content = typeof reader.result === "string" ? reader.result.toString() : new Uint8Array(reader.result);
-                    const fileName = this.newFile(file.name, content);
-                    this.select(fileName);
-                };
-                reader.onerror = () => undefined;
-                if (file.name.match(/\.(wav|mp3|ogg|flac|aac)$/)) reader.readAsArrayBuffer(file);
-                else reader.readAsText(file);
-            }
+            if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+            e.preventDefault();
+            e.stopPropagation();
+            // Must capture the source handle before the first await (see helper).
+            const resolveDiskHandles = captureDroppedFileHandles(e.dataTransfer, this.onDroppedFileHandle);
+            const importedFiles = await Promise.all(Array.from(e.dataTransfer.files).map(async file => ({
+                file,
+                content: await readPickedFileContent(file)
+            })));
+            const savedNames = importedFiles.map(({ file, content }) => this.newFile(file.name, content, { persist: "manual" }));
+            const lastSavedName = savedNames[savedNames.length - 1];
+            if (lastSavedName) this.select(lastSavedName);
+            await Promise.all(importedFiles.map(({ content }, index) => this.persistFile(savedNames[index], content, { immediate: true })));
+            await resolveDiskHandles(savedNames);
         };
         this.container.addEventListener("dragenter", dragenterHandler);
         this.container.addEventListener("dragover", dragenterHandler);
@@ -191,6 +198,7 @@ export class FileManager {
         this.divOverlay.addEventListener("dragend", dragendHandler);
         this.divOverlay.addEventListener("drop", dropHandler);
     }
+
     /**
      * create a new file container with buttons
      *
@@ -246,18 +254,7 @@ export class FileManager {
         btnMain.addEventListener("touchstart", () => this.setMain(this._fileList.indexOf(fileName)));
         btnDelete.addEventListener("click", (e) => {
             e.stopPropagation();
-            const i = this._fileList.indexOf(fileName);
-            this.project.deleteFile(fileName);
-            divFile.remove();
-            if (this.deleteHandler) this.deleteHandler(fileName, this.mainCode);
-            const nextSelection = this.project.ensureSelectionAfterDelete();
-            if (!this.findFileDiv(nextSelection.fileName)) this.divFiles.appendChild(this.createFileDiv(nextSelection.fileName, false));
-            if (nextSelection.createdDefaultFile && this.saveHandler) {
-                this.saveHandler(nextSelection.fileName, this.getValue(nextSelection.fileName), this.mainCode);
-            }
-            this.select(nextSelection.fileName);
-            if (this.$mainFile >= this._fileList.length) this.setMain(this._fileList.length - 1);
-            else this.setMain(this.$mainFile);
+            this.deleteFile(fileName);
         });
         const handlePointerDown = () => this.select(fileName);
         divFile.addEventListener("mousedown", handlePointerDown);
@@ -300,14 +297,13 @@ export class FileManager {
             this.divFiles.appendChild(divFile);
         });
         this.select(this._fileList[0]);
-        if (createdDefaultFile && this.saveHandler) this.saveHandler(this._fileList[0], this.getValue(this._fileList[0]), this.mainCode);
+        if (createdDefaultFile) void this.persistFile(this._fileList[0], this.getValue(this._fileList[0]), { immediate: true });
         if (this.$mainFile >= this._fileList.length) this.setMain(this._fileList.length - 1);
         else this.setMain(this.$mainFile);
     }
     rename(oldName: string, newNameIn: string) {
         const newName = ProjectModel.sanitizeFileName(newNameIn);
         if (oldName === newName) return false;
-        const i = this._fileList.indexOf(oldName);
         let spanName: HTMLSpanElement;
         let divFile: HTMLDivElement;
         for (let i = 0; i < this.divFiles.children.length; i++) {
@@ -330,7 +326,8 @@ export class FileManager {
         spanName.innerText = renamedName;
         spanName.contentEditable = "false";
         divFile.dataset.filename = renamedName;
-        if (this.saveHandler) this.saveHandler(renamedName, this.getValue(renamedName), this.mainCode);
+        this.setDiskTracked(renamedName, false);
+        void this.persistFile(renamedName, this.getValue(renamedName), { immediate: true });
         this.select(renamedName);
         this.deleteHandler(oldName, this.mainCode);
         return true;
@@ -338,14 +335,44 @@ export class FileManager {
     renameSelected(newName: string) {
         this.rename(this.selected, newName);
     }
-    newFile(fileNameIn?: string, content?: string | Uint8Array) {
+    /**
+     * Permanently deletes a file and updates selection, main-file state, DOM,
+     * and durable persistence through the configured delete handler.
+     */
+    deleteFile(fileName: string): void {
+        if (!this.project.deleteFile(fileName)) return;
+        const divFile = this.findFileDiv(fileName);
+        if (divFile) divFile.remove();
+        if (this.deleteHandler) this.deleteHandler(fileName, this.mainCode);
+        const nextSelection = this.project.ensureSelectionAfterDelete();
+        if (!this.findFileDiv(nextSelection.fileName)) this.divFiles.appendChild(this.createFileDiv(nextSelection.fileName, false));
+        if (nextSelection.createdDefaultFile) {
+            void this.persistFile(nextSelection.fileName, this.getValue(nextSelection.fileName), { immediate: true });
+        }
+        this.select(nextSelection.fileName);
+        if (this.$mainFile >= this._fileList.length) this.setMain(this._fileList.length - 1);
+        else this.setMain(this.$mainFile);
+    }
+
+    newFile(fileNameIn?: string, content?: string | Uint8Array, options: { persist?: "immediate" | "debounced" | "manual" } = {}) {
         const fileName = this.project.createFile(fileNameIn, content);
         const divFile = this.createFileDiv(fileName, false);
         this.divFiles.appendChild(divFile);
-        if (this.saveHandler) this.saveHandler(fileName, content || "", this.mainCode);
+        const persist = options.persist || "immediate";
+        if (persist !== "manual") void this.persistFile(fileName, content || "", { immediate: persist === "immediate" });
         this.select(fileName);
         if (fileName.endsWith(".dsp")) this.setMain(this._fileList.length - 1);
         return fileName;
+    }
+    /**
+     * Persists a project file through the runtime save handler.
+     *
+     * Structural changes pass `immediate` so reload sees the new project shape.
+     * Editor text changes keep the debounced path through `save()`.
+     */
+    persistFile(fileName: string, content: string | Uint8Array, options: SaveOptions = {}): Promise<void> {
+        if (!this.saveHandler) return Promise.resolve();
+        return Promise.resolve(this.saveHandler(fileName, content, this.mainCode, options));
     }
     select(fileName: string) {
         if (!this.project.selectFile(fileName)) return;
@@ -358,13 +385,28 @@ export class FileManager {
     }
     save(fileName: string, content: string) {
         if (!this.project.saveFile(fileName, content)) return;
-        if (this.saveHandler) this.saveHandler(fileName, content, this.mainCode);
+        void this.persistFile(fileName, content);
+    }
+
+    /**
+     * Replace a project text file from a trusted external source.
+     *
+     * Used when a mounted disk file changes outside Faust IDE and the local
+     * buffer is still clean. BrowserFS is updated, Monaco is refreshed if the
+     * file is selected, and disk write-back is skipped because the content
+     * already came from that disk origin.
+     */
+    replaceExternalText(fileName: string, content: string): Promise<void> {
+        const changed = this.project.saveFile(fileName, content);
+        if (this.selected === fileName && this.selectHandler) this.selectHandler(fileName, content, this.mainCode);
+        if (!changed) return Promise.resolve();
+        return this.persistFile(fileName, content, { immediate: true, skipDiskSave: true });
     }
     saveAll() {
         if (!this.saveHandler) return;
         this._fileList.forEach((fileName) => {
             const content = this.getValue(fileName);
-            if (this.selectHandler && content) this.saveHandler(fileName, content, this.mainCode);
+            if (this.selectHandler && content) void this.persistFile(fileName, content);
         });
     }
     setValue(value: string, useSelectHandler?: boolean) {
@@ -407,6 +449,10 @@ export class FileManager {
     get fileNames() {
         return this.project.fileList;
     }
+    /** The underlying ProjectModel (needed by LibraryVolume and similar adapters). */
+    get model() {
+        return this.project;
+    }
     get selectedCode() {
         return this.project.selectedCode;
     }
@@ -443,6 +489,12 @@ export class FileManager {
         this._fs = fsIn;
         if (this.project) this.project.fs = fsIn;
     }
+    /** Marks (or unmarks) a file row as linked to a mounted disk volume. */
+    setDiskTracked(fileName: string, tracked: boolean): void {
+        const div = this.findFileDiv(fileName);
+        if (div) div.classList.toggle("filemanager-file--disk", tracked);
+    }
+
     private findFileDiv(fileName: string) {
         return this.divFiles.querySelector(`[data-filename="${fileName}"]`) as HTMLDivElement;
     }

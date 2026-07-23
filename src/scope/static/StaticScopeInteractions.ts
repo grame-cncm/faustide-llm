@@ -1,4 +1,4 @@
-import type { TDrawOptions, TWaveformSelection } from "../../StaticScope";
+import type { TDrawOptions, TWaveformSelection } from "./StaticScopeTypes";
 import { StaticScopeMode } from "../ScopeModes";
 import { getVisibleTimeDomainWindow } from "./TimeDomainRenderer";
 import {

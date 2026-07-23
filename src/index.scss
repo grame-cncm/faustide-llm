@@ -90,20 +90,13 @@ body {
                         border-color: $color;
                     }
                 }
-                & > #btn-upload {
-                    $color: #ff88aa;
-                    border-color: $color;
-                    &:hover {
-                        background-color: darken($color, 50%);
-                        border-color: $color;
-                    }
-                    & > #input-upload {
-                        display: none;
-                    }
-                }
                 & > #btn-save {
                     $color: #35a8f0;
                     border-color: $color;
+                    white-space: nowrap;
+                    font-size: 1rem;
+                    padding-left: 0.5rem;
+                    padding-right: 0.5rem;
                     &:hover {
                         background-color: darken($color, 50%);
                         border-color: $color;

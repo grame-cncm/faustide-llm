@@ -3,7 +3,7 @@
  * zero-crossing stabilization, min/max grouping per pixel, and cursor stats.
  * Extracted from StaticScope.
  */
-import type { TDrawOptions, TWaveformSelection } from "../../StaticScope";
+import type { TDrawOptions, TWaveformSelection } from "./StaticScopeTypes";
 import { StaticScopeMode } from "../ScopeModes";
 import { wrap } from "../../utils";
 import {

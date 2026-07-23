@@ -18,7 +18,16 @@ type ProjectRuntimeControllerOptions = {
     saveEditorParams: () => void;
     runDsp: (code: string) => Promise<{ success: boolean; error?: Error }>;
     updateDiagram: (code: string) => { success: boolean; error?: Error };
+    /**
+     * Called after each BrowserFS write for files that have a known disk
+     * origin (open in-place, invariant I5).  Errors are shown via alertController.
+     */
+    onDiskSave?: (fileName: string, content: string | Uint8Array) => Promise<void>;
+    /** Called after a file has been removed from durable project storage. */
+    onFileDelete?: (fileName: string) => void;
 };
+
+type SaveOptions = { immediate?: boolean; skipDiskSave?: boolean };
 
 /**
  * Coordinates project persistence callbacks around FileManager.
@@ -36,7 +45,9 @@ export class ProjectRuntimeController {
     private readonly saveEditorParams: () => void;
     private readonly runDsp: (code: string) => Promise<{ success: boolean; error?: Error }>;
     private readonly updateDiagram: (code: string) => { success: boolean; error?: Error };
-    private saveTimeout: number;
+    private readonly onDiskSave?: (fileName: string, content: string | Uint8Array) => Promise<void>;
+    private readonly onFileDelete?: (fileName: string) => void;
+    private readonly saveTimeouts = new Map<string, number>();
     private realtimeCompileTimer: number;
 
     constructor(options: ProjectRuntimeControllerOptions) {
@@ -47,6 +58,8 @@ export class ProjectRuntimeController {
         this.saveEditorParams = options.saveEditorParams;
         this.runDsp = options.runDsp;
         this.updateDiagram = options.updateDiagram;
+        this.onDiskSave = options.onDiskSave;
+        this.onFileDelete = options.onFileDelete;
     }
 
     /**
@@ -58,7 +71,7 @@ export class ProjectRuntimeController {
     createFileManagerHandlers(selectHandler: (fileName: string, content: string) => void) {
         return {
             selectHandler,
-            saveHandler: (fileName: string, content: string | Uint8Array, mainCode: string) => this.saveFile(fileName, content, mainCode),
+            saveHandler: (fileName: string, content: string | Uint8Array, mainCode: string, options?: SaveOptions) => this.saveFile(fileName, content, mainCode, options),
             deleteHandler: (fileName: string) => this.deleteFile(fileName),
             mainFileChangeHandler: (filename: string, mainCode: string) => this.changeMainFile(filename, mainCode)
         };
@@ -78,15 +91,30 @@ export class ProjectRuntimeController {
      * Debounces project file writes and schedules realtime work for the latest
      * main file code.
      */
-    private saveFile(fileName: string, content: string | Uint8Array, mainCode: string) {
-        clearTimeout(this.saveTimeout);
-        this.saveTimeout = setTimeout(async () => {
+    private async persistFileNow(fileName: string, content: string | Uint8Array, options: SaveOptions = {}): Promise<void> {
+        await this.projectPersistence.saveFile(fileName, content);
+        if (!options.skipDiskSave && this.onDiskSave) await this.onDiskSave(fileName, content);
+    }
+
+    private saveFile(fileName: string, content: string | Uint8Array, mainCode: string, options: SaveOptions = {}) {
+        clearTimeout(this.saveTimeouts.get(fileName));
+        if (options.immediate) {
+            this.saveTimeouts.delete(fileName);
+            this.scheduleRealtimeCompile(mainCode, 1000);
+            return this.persistFileNow(fileName, content, options).catch((e) => {
+                this.alertController.show(e instanceof Error ? e : String(e));
+            });
+        }
+        const timeout = setTimeout(async () => {
             try {
-                await this.projectPersistence.saveFile(fileName, content);
+                await this.persistFileNow(fileName, content, options);
             } catch (e) {
                 this.alertController.show(e instanceof Error ? e : String(e));
+            } finally {
+                if (this.saveTimeouts.get(fileName) === timeout) this.saveTimeouts.delete(fileName);
             }
         }, 1000);
+        this.saveTimeouts.set(fileName, timeout);
         this.scheduleRealtimeCompile(mainCode, 1000);
     }
 
@@ -95,7 +123,10 @@ export class ProjectRuntimeController {
      */
     private async deleteFile(fileName: string) {
         try {
+            clearTimeout(this.saveTimeouts.get(fileName));
+            this.saveTimeouts.delete(fileName);
             await this.projectPersistence.deleteFile(fileName);
+            if (this.onFileDelete) this.onFileDelete(fileName);
         } catch (e) {
             this.alertController.show(e instanceof Error ? e : String(e));
         }

@@ -1,6 +1,7 @@
 import type JSZip from "jszip";
 import type { FileManager } from "../FileManager";
 import type { FaustEditorAudioEnv, FaustEditorCompileOptions } from "../runtime/types";
+import { captureDroppedFileHandles, type DroppedFileHandleCallback } from "../runtime/fs/FileAccess";
 
 type ProjectFilesControllerOptions = {
     fileManager: FileManager;
@@ -10,6 +11,8 @@ type ProjectFilesControllerOptions = {
     readFileAsText?: (file: File) => Promise<string>;
     runDsp: (code: string) => Promise<{ success: boolean; error?: Error }>;
     updateDiagram: (code: string) => { success: boolean; error?: Error };
+    /** Called after a drag-and-drop save with the FS handle of the source file (Chrome only). */
+    onDroppedFileHandle?: DroppedFileHandleCallback;
 };
 
 /**
@@ -27,6 +30,7 @@ export class ProjectFilesController {
     private readonly readFileAsText: (file: File) => Promise<string>;
     private readonly runDsp: (code: string) => Promise<{ success: boolean; error?: Error }>;
     private readonly updateDiagram: (code: string) => { success: boolean; error?: Error };
+    private readonly onDroppedFileHandle?: (savedName: string, handle: FileSystemFileHandle) => void;
 
     constructor(options: ProjectFilesControllerOptions) {
         this.fileManager = options.fileManager;
@@ -36,6 +40,7 @@ export class ProjectFilesController {
         this.readFileAsText = options.readFileAsText || ProjectFilesController.readFileAsText;
         this.runDsp = options.runDsp;
         this.updateDiagram = options.updateDiagram;
+        this.onDroppedFileHandle = options.onDroppedFileHandle;
     }
 
     /**
@@ -43,12 +48,6 @@ export class ProjectFilesController {
      * editor drag-and-drop listeners.
      */
     bind() {
-        $("#btn-upload").on("click", () => {
-            $("#input-upload").click();
-        });
-        $<HTMLInputElement>("#input-upload")
-            .on("input", e => this.importFile(e.currentTarget.files && e.currentTarget.files[0]))
-            .on("click", e => e.stopPropagation());
         $("#btn-save").on("click", () => this.saveZip());
         $("#a-save").on("click", e => e.stopPropagation());
         $("#a-docs").on("click", e => e.stopPropagation());
@@ -56,13 +55,20 @@ export class ProjectFilesController {
     }
 
     /**
-     * Reads a browser File and creates a sanitized project file from it.
+     * Reads dropped files concurrently, then appends them in drop order.
      */
-    private async importFile(file?: File) {
-        if (!file) return;
-        const code = await this.readFileAsText(file);
-        this.fileManager.newFile(this.sanitizeFileName(file.name), code);
-        this.recompileIfNeeded();
+    private async importFiles(files: File[]): Promise<string[]> {
+        const imports = await Promise.all(files.map(async file => ({
+            file,
+            code: await this.readFileAsText(file)
+        })));
+        const savedNames = imports.map(({ file, code }) => {
+            const savedName = this.fileManager.newFile(this.sanitizeFileName(file.name), code, { persist: "manual" });
+            this.recompileIfNeeded();
+            return savedName;
+        });
+        await Promise.all(imports.map(({ code }, index) => this.fileManager.persistFile(savedNames[index], code, { immediate: true })));
+        return savedNames;
     }
 
     /**
@@ -102,7 +108,9 @@ export class ProjectFilesController {
     }
 
     /**
-     * Handles a file dropped onto the editor overlay.
+     * Handles a file dropped onto the editor overlay: imports it as a project
+     * file and (Chromium only) flags it as disk-tracked when it came from a
+     * mounted folder.
      */
     private async dropFile(e: JQuery.DropEvent) {
         $(e.currentTarget).hide();
@@ -110,7 +118,10 @@ export class ProjectFilesController {
         if (!event.dataTransfer || !event.dataTransfer.files.length) return;
         e.preventDefault();
         e.stopPropagation();
-        await this.importFile(event.dataTransfer.files[0]);
+        // Must capture the source handle before the first await (see helper).
+        const resolveDiskHandles = captureDroppedFileHandles(event.dataTransfer, this.onDroppedFileHandle);
+        const savedNames = await this.importFiles(Array.from(event.dataTransfer.files));
+        await resolveDiskHandles(savedNames);
     }
 
     /**

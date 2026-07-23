@@ -44,6 +44,49 @@ describe("ProjectRuntimeController", () => {
         expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("main.dsp", "process = 1;");
     });
 
+    it("keeps independent pending saves for different files", async () => {
+        const { handlers, options } = bindController();
+
+        handlers.saveHandler("first.dsp", "process = _;", "main code");
+        handlers.saveHandler("second.lib", "foo = _;", "main code");
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledTimes(2);
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("first.dsp", "process = _;");
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("second.lib", "foo = _;");
+    });
+
+    it("persists immediate saves without waiting for the debounce", async () => {
+        const { handlers, options } = bindController();
+
+        await handlers.saveHandler("drop.dsp", "process = _;", "main code", { immediate: true });
+
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("drop.dsp", "process = _;");
+    });
+
+    it("can persist BrowserFS content without disk write-back", async () => {
+        const onDiskSave = vi.fn(async () => undefined);
+        const { handlers, options } = bindController({ options: { onDiskSave } });
+
+        await handlers.saveHandler("main.dsp", "process = _;", "main code", { immediate: true, skipDiskSave: true });
+
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("main.dsp", "process = _;");
+        expect(onDiskSave).not.toHaveBeenCalled();
+    });
+
+    it("immediate saves cancel a pending debounced save for the same file", async () => {
+        const { handlers, options } = bindController();
+
+        handlers.saveHandler("drop.dsp", "old = _;", "main code");
+        await handlers.saveHandler("drop.dsp", "process = _;", "main code", { immediate: true });
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledTimes(1);
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("drop.dsp", "process = _;");
+    });
+
     it("shows persistence errors through the alert controller", async () => {
         const error = new Error("storage failed");
         const { handlers, options } = bindController({
@@ -57,6 +100,7 @@ describe("ProjectRuntimeController", () => {
 
         handlers.saveHandler("main.dsp", "process = _;", "main code");
         vi.advanceTimersByTime(1000);
+        await Promise.resolve();
         await Promise.resolve();
 
         expect(options.alertController.show).toHaveBeenCalledWith(error);
@@ -106,6 +150,39 @@ describe("ProjectRuntimeController", () => {
         await handlers.deleteHandler("old.dsp");
 
         expect(options.projectPersistence.deleteFile).toHaveBeenCalledWith("old.dsp");
+    });
+
+    it("notifies after a file is deleted so disk origins can be forgotten", async () => {
+        const onFileDelete = vi.fn();
+        const { handlers } = bindController({ options: { onFileDelete } });
+
+        await handlers.deleteHandler("old.dsp");
+
+        expect(onFileDelete).toHaveBeenCalledWith("old.dsp");
+    });
+
+    it("cancels a pending save when the same file is deleted", async () => {
+        const { handlers, options } = bindController();
+
+        handlers.saveHandler("doomed.dsp", "process = _;", "main code");
+        await handlers.deleteHandler("doomed.dsp");
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+
+        expect(options.projectPersistence.deleteFile).toHaveBeenCalledWith("doomed.dsp");
+        expect(options.projectPersistence.saveFile).not.toHaveBeenCalled();
+    });
+
+    it("keeps a pending save for a different file when another file is deleted", async () => {
+        const { handlers, options } = bindController();
+
+        handlers.saveHandler("kept.dsp", "process = _;", "main code");
+        await handlers.deleteHandler("other.dsp");
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+
+        expect(options.projectPersistence.deleteFile).toHaveBeenCalledWith("other.dsp");
+        expect(options.projectPersistence.saveFile).toHaveBeenCalledWith("kept.dsp", "process = _;");
     });
 
     it("binds editor content changes back into FileManager", () => {

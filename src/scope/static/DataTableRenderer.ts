@@ -2,7 +2,7 @@
  * Static-scope "Data" mode renderer: fills a DOM table with the raw sample
  * values (and event markers) for the current buffer. Extracted from StaticScope.
  */
-import type { TDrawOptions, TWaveformSelection } from "../../StaticScope";
+import type { TDrawOptions, TWaveformSelection } from "./StaticScopeTypes";
 import { wrap } from "../../utils";
 
 const DATA_CELL_HEIGHT = 20;

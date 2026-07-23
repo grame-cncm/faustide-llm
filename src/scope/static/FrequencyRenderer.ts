@@ -5,7 +5,7 @@
  * linear amplitude; both views support linear/log frequency mapping and cursor
  * statistics. Extracted from StaticScope.
  */
-import type { TDrawOptions } from "../../StaticScope";
+import type { TDrawOptions } from "./StaticScopeTypes";
 import { wrap } from "../../utils";
 import {
     binIndexToFrequency,

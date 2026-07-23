@@ -86,6 +86,23 @@ const createManager = (files: Record<string, StoredFile> = {}, options: Partial<
 
 const fileNames = (manager: FileManager) => Array.from(manager.divFiles.querySelectorAll(".filemanager-file")).map(element => (element as HTMLDivElement).dataset.filename);
 
+const diskClass = (manager: FileManager, name: string) => {
+    const div = manager.divFiles.querySelector(`[data-filename="${name}"]`) as HTMLDivElement;
+    return div.classList.contains("filemanager-file--disk");
+};
+
+const droppedTextFile = (name: string, content: string): File => {
+    const file = new File([content], name);
+    Object.defineProperty(file, "text", { value: vi.fn(async () => content) });
+    return file;
+};
+
+const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+};
+
 describe("FileManager", () => {
     it("creates and selects untitled.dsp when the filesystem is empty", () => {
         const { fs, handlers, manager } = createManager();
@@ -123,6 +140,16 @@ describe("FileManager", () => {
         expect(manager.selected).toBe("renamed_file.dsp");
     });
 
+    it("renaming a disk-tracked file unlinks the green disk status", () => {
+        const { handlers, manager } = createManager({ "mounted.dsp": "process = _;" });
+        manager.setDiskTracked("mounted.dsp", true);
+
+        manager.rename("mounted.dsp", "renamed.dsp");
+
+        expect(diskClass(manager, "renamed.dsp")).toBe(false);
+        expect(handlers.deleteHandler).toHaveBeenCalledWith("mounted.dsp", expect.any(String));
+    });
+
     it("does not select audio files as editable code files", () => {
         const { manager } = createManager({ "main.dsp": "process = _;", "sound.wav": new Uint8Array([1, 2]) });
 
@@ -154,6 +181,39 @@ describe("FileManager", () => {
         expect(manager.mainCode).toContain("stdfaust.lib");
     });
 
+    it("deletes files permanently without rendering a trash section", () => {
+        const { fs, handlers, manager } = createManager({ "main.dsp": "process = _;", "patch.dsp": "process = 1;" });
+
+        manager.deleteFile("patch.dsp");
+
+        expect(fileNames(manager)).toEqual(["main.dsp"]);
+        expect(fs.files.has("patch.dsp")).toBe(false);
+        expect(fs.files.has("__trash__/patch.dsp")).toBe(false);
+        expect(handlers.deleteHandler).toHaveBeenCalledWith("patch.dsp", expect.any(String));
+        expect(document.querySelector(".filemanager-trash")).toBeNull();
+    });
+
+    it("imports every file dropped on the file manager overlay", async () => {
+        const { fs, manager } = createManager({ "main.dsp": "process = _;" });
+
+        const event = new Event("drop", { bubbles: true });
+        Object.defineProperty(event, "dataTransfer", {
+            value: {
+                files: [
+                    droppedTextFile("helper lib.lib", "foo = _;"),
+                    droppedTextFile("patch.dsp", "process = foo;")
+                ]
+            }
+        });
+        manager.divOverlay.dispatchEvent(event);
+        await flush();
+
+        expect(fs.files.get("helperlib.lib")).toBe("foo = _;");
+        expect(fs.files.get("patch.dsp")).toBe("process = foo;");
+        expect(fileNames(manager)).toEqual(["main.dsp", "helperlib.lib", "patch.dsp"]);
+        expect(manager.selected).toBe("patch.dsp");
+    });
+
     it("calls select, save, delete, and main-file-change handlers with current behavior", () => {
         const { handlers, manager } = createManager({ "main.dsp": "process = _;" });
 
@@ -165,8 +225,22 @@ describe("FileManager", () => {
         fireEvent.click(deleteButton);
 
         expect(handlers.selectHandler).toHaveBeenCalledWith("main.dsp", "process = 1;", expect.any(String));
-        expect(handlers.saveHandler).toHaveBeenCalledWith("main.dsp", "process = 1;", expect.any(String));
+        expect(handlers.saveHandler).toHaveBeenCalledWith("main.dsp", "process = 1;", expect.any(String), {});
         expect(handlers.deleteHandler).toHaveBeenCalledWith("main.dsp", expect.any(String));
         expect(handlers.mainFileChangeHandler).toHaveBeenCalledWith("other.dsp", "process = 2;");
     });
+
+    it("replaces external text and persists it without disk write-back", async () => {
+        const { fs, handlers, manager } = createManager({ "main.dsp": "process = _;" });
+
+        await manager.replaceExternalText("main.dsp", "process = 1;");
+
+        expect(fs.files.get("main.dsp")).toBe("process = 1;");
+        expect(handlers.selectHandler).toHaveBeenLastCalledWith("main.dsp", "process = 1;", "process = 1;");
+        expect(handlers.saveHandler).toHaveBeenCalledWith("main.dsp", "process = 1;", "process = 1;", {
+            immediate: true,
+            skipDiskSave: true
+        });
+    });
+
 });
